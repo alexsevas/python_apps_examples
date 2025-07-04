@@ -19,7 +19,7 @@ def extract_audio(video_path, audio_path):
         print("Ошибка при извлечении аудио:", result.stderr.decode())
         sys.exit(1)
 
-def transcribe_audio(audio_path, model_name="medium"):  # Можно выбрать 'base', 'small', 'medium', 'large'
+def transcribe_audio(audio_path, model_name="large-v3"):  # Можно выбрать 'base', 'small', 'medium', 'large', 'large-v3'
     """
     Расшифровывает аудиофайл с помощью Whisper (CUDA, если доступно).
     """
@@ -27,7 +27,8 @@ def transcribe_audio(audio_path, model_name="medium"):  # Можно выбра�
     print(f"Загрузка модели Whisper ({model_name}) на устройство: {device}")
     model = whisper.load_model(model_name, device=device)
     print("Начинается расшифровка...")
-    result = model.transcribe(audio_path)
+    # result = model.transcribe(audio_path) # результат расшифровки на родном языке
+    result = model.transcribe(audio_path, language='ru') # результат расшифровки на RU языке
     return result["text"]
 
 def main():
