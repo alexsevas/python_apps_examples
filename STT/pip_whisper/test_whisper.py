@@ -3,10 +3,10 @@
 # pip install setuptools-rust
 # pip install -U openai-whisper
 
-# CMD: whisper -h
-
 import whisper
+import pprint
 
-model = whisper.load_model("large-v3")
-result = model.transcribe("C:\\PROJECTS\\_DATA_\\audio_RU_20sec.wav")
-print(result["text"])
+model = whisper.load_model("medium") # Можно выбрать 'base', 'small', 'medium', 'large'
+result = model.transcribe("D:\\Projects\\_Data_\\Audio_examples\\audio_RU_20sec.wav")
+
+pprint.pprint(result["text"])
