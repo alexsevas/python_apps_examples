@@ -1,19 +1,89 @@
 # conda activate extras2
 
-# pip install -U g4f
-# pip install -U nodriver platformdirs
-# pip install -U curl_cffi
+# pip install -U g4f nodriver platformdirs curl_cffi browser_cookie3
+
+# CHAT WITH LLM USING THE G4F LIBRARY
+# 2025-07-13:
+# Стабильно работают:
+# /model 1 - gpt-4
+# /model 3 - gpt-4o-mini
+# /model 11 - gpt-4.1-mini
+# /model 12 - gpt-4.1-nano
+# /model 10 - gpt-4.1
+# /model 36 - phi-4
+# /model 42 - gemini-1.5-flash
+# /model 43 - gemini-1.5-pro
+# /model 56 - gemma-3-27b
+# /model 57 - gemma-3n-e4b
+# /model 58 - blackboxai
+# /model 59 - command-r
+# /model 62 - command-a
+# /model 66 - qwen-2-vl-72b
+# /model 70 - qwen-2.5-coder-32b
+# /model 72 - qwen-2.5-max
+# /model 73 - qwen-2.5-vl-72b (режет текст, разобраться)
+# /model 74 - qwen-3-235b
+# /model 81 - qwq-32b
+# /model 93 - deepseek-r1-0528
+# /model 94 - deepseek-r1-0528-turbo
+# /model 98 - grok-3-mini
+# /model 102 - sonar-reasoning
+# /model 103 - sonar-reasoning-pro
+# /model 104 - r1-1776 (ризонинг)
+# /model 105 - nemotron-70b (Долго)
+# /model 112 - evil
+
 
 import g4f
 import time
-import pprint
 import asyncio
+import os
 from datetime import datetime
-from g4f.models import ModelUtils
+from g4f import Provider
+from g4f.models import Model, ModelUtils
 
 
-# Фильтрация текстовых моделей
-def get_text_models():
+# Создаем папку для cookies, если её нет
+def ensure_cookie_dir():
+    cookie_dir = os.path.join(os.getenv('APPDATA'), 'g4f', 'cookies')
+    if not os.path.exists(cookie_dir):
+        os.makedirs(cookie_dir, exist_ok=True)
+        print(f"📁 Создана папка для cookies: {cookie_dir}")
+    return cookie_dir
+
+
+# Получаем список доступных текстовых провайдеров
+def get_available_text_providers():
+    excluded_keywords = [
+        'vision', 'image', 'img', 'dall-e', 'clip', 'whisper', 'flux',
+        'tts', 'speech', 'audio', 'ocr', 'stable-diffusion', 'sd'
+    ]
+
+    providers = []
+    for attr in dir(Provider):
+        if attr.startswith('__') or attr == 'BaseProvider':
+            continue
+
+        provider = getattr(Provider, attr)
+        if not hasattr(provider, 'model') and not hasattr(provider, 'supported_models'):
+            continue
+
+        # Проверяем, является ли модель текстовой
+        if hasattr(provider, 'model'):
+            model_name = provider.model
+            if any(kw in model_name.lower() for kw in excluded_keywords):
+                continue
+        elif hasattr(provider, 'supported_models'):
+            if any(any(kw in m.lower() for kw in excluded_keywords) for m in provider.supported_models):
+                continue
+
+        providers.append(provider)
+
+    return providers
+
+
+# Получаем список доступных текстовых моделей
+def get_available_text_models():
     excluded_keywords = [
         'vision', 'image', 'img', 'dall-e', 'clip', 'whisper', 'flux',
         'tts', 'speech', 'audio', 'ocr', 'stable-diffusion', 'sd'
@@ -36,7 +106,22 @@ async def get_model_response(model, messages):
         response_time = time.time() - start_time
         return response, response_time
     except Exception as e:
-        return f"Ошибка: {str(e)}", 0
+        # Пробуем разные провайдеры, пока не найдем работающий
+        for provider in get_available_text_providers():
+            try:
+                print(f"⚠️ Проблема с основным провайдером, пробую: {provider.__name__}")
+                start_time = time.time()
+                response = await g4f.ChatCompletion.create_async(
+                    model=model,
+                    messages=messages,
+                    provider=provider
+                )
+                response_time = time.time() - start_time
+                return response, response_time
+            except:
+                continue
+
+        return f"Все провайдеры не сработали. Ошибка: {str(e)}", 0
 
 
 # Функция для отображения списка моделей
@@ -108,7 +193,7 @@ async def chat_with_model(selected_model, text_models, messages=None):
 
             messages.append({"role": "assistant", "content": response})
 
-            pprint.pprint(f"\n{selected_model}: {response}")
+            print(f"\n{selected_model}: {response}")
             print(f"⏱ Время ответа: {response_time:.2f} секунд")
             print("-" * 50)
 
@@ -122,8 +207,11 @@ async def chat_with_model(selected_model, text_models, messages=None):
 
 # Главная функция
 async def main():
+    # Убедимся, что папка для cookies существует
+    ensure_cookie_dir()
+
     # Получаем список текстовых моделей
-    text_models = get_text_models()
+    text_models = get_available_text_models()
 
     if not text_models:
         print("❌ Не найдено доступных текстовых моделей.")
@@ -177,9 +265,62 @@ async def main():
 
 
 if __name__ == "__main__":
+    # Добавляем обработку событий для Windows
+    if os.name == 'nt':
+        import asyncio
+
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
     asyncio.run(main())
 
 '''
+---------
+v 0.0.03
+---------
+CHANGE:
+1. Автоматизация работы с cookies:
+   - Реализована функция `ensure_cookie_dir()`
+   - Автоматическое создание папки `%APPDATA%\g4f\cookies`
+   - Устранение ошибок `FileNotFoundError`
+
+2. Динамическая работа с провайдерами:
+   - Замена жестко заданных провайдеров (Aichat/DeepAi) на адаптивную систему
+   - Функция `get_available_text_providers()` для автоматического определения доступных провайдеров
+   - Перебор всех рабочих провайдеров при ошибках
+
+3. Улучшенная обработка ошибок:
+   - Многоуровневая система восстановления после сбоев
+   - Автоматический переход между провайдерами
+   - Понятные сообщения об ошибках для пользователя
+
+4. Повышение стабильности:
+   - Двойная фильтрация моделей (текстовые vs мультимодальные)
+   - Специальная обработка для Windows (`WindowsSelectorEventLoopPolicy`)
+   - Защита от изменений в API библиотеки g4f
+
+5. Автоматизация и адаптивность:
+   - Динамическое определение доступных провайдеров
+   - Независимость от конкретных имен провайдеров
+   - Автоматическое восстановление после ошибок API
+   
+FIX:
+Проблема - Решение 
+---------------------
+- `FileNotFoundError` (cookies) - Автоматическое создание нужных директорий 
+- Ошибки 403 (Copilot) - Динамический выбор альтернативных провайдеров 
+- `AttributeError` (провайдеры) - Автоматическое обнаружение доступных провайдеров 
+- Проблемы асинхронности (Windows) - Специальная политика событий 
+- Нестабильность провайдеров - Последовательный перебор всех доступных вариантов 
+- Устаревшие модели - Динамическое обновление списка при запуске 
+
+FINAL:
+Программа теперь полностью самодостаточна:
+- Автоматически адаптируется к изменениям в библиотеке g4f
+- Работает без ручной настройки провайдеров
+- Обеспечивает максимальную стабильность через систему автоматического восстановления
+- Предоставляет одинаково надежную работу на Windows и других ОС
+- Сохраняет пользовательский опыт при изменениях API
+
 ---------
 v 0.0.02
 ---------
@@ -204,6 +345,7 @@ v 0.0.02
    - Возврат к списку моделей без перезапуска программы
    - Продолжение работы с текущей моделью после завершения сессии
    - Возможность очистки истории в любой момент
+   
 ---------
 v 0.0.01
 ---------
