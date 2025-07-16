@@ -42,6 +42,7 @@ import os
 from datetime import datetime
 from g4f import Provider
 from g4f.models import Model, ModelUtils
+import re
 
 
 # Создаем папку для cookies, если её нет
@@ -175,10 +176,62 @@ async def get_streaming_response(model, messages):
 
 # Функция для отображения списка моделей
 def show_model_list(models, current_model=None):
+    # Список стабильных моделей из комментария
+    stable_models = set()
+    stable_pattern = re.compile(r"/model (\d+) - ([^\n]+)")
+    stable_block = '''/model 1 - gpt-4
+/model 3 - gpt-4o-mini
+/model 11 - gpt-4.1-mini
+/model 12 - gpt-4.1-nano
+/model 10 - gpt-4.1
+/model 36 - phi-4
+/model 42 - gemini-1.5-flash
+/model 43 - gemini-1.5-pro
+/model 56 - gemma-3-27b
+/model 57 - gemma-3n-e4b
+/model 58 - blackboxai
+/model 59 - command-r
+/model 62 - command-a
+/model 66 - qwen-2-vl-72b
+/model 70 - qwen-2.5-coder-32b
+/model 72 - qwen-2.5-max
+/model 73 - qwen-2.5-vl-72b (режет текст, разобраться)
+/model 74 - qwen-3-235b
+/model 81 - qwq-32b
+/model 93 - deepseek-r1-0528
+/model 94 - deepseek-r1-0528-turbo
+/model 98 - grok-3-mini
+/model 102 - sonar-reasoning
+/model 103 - sonar-reasoning-pro
+/model 104 - r1-1776 (ризонинг)
+/model 105 - nemotron-70b (Долго)
+/model 112 - evil'''
+    for m in stable_pattern.finditer(stable_block):
+        stable_models.add(m.group(2).strip())
+
+    # Настройки таблицы
+    cols = 3
+    # Определяем максимальную ширину для номера и для названия
+    num_width = max(len(str(i + 1)) for i in range(len(models)))
+    name_width = max(len(model) for model in models)
+    col_width = num_width + 2 + name_width + 2  # 2 пробела после номера и 2 после названия
+
     print("\n📚 Доступные текстовые модели:")
+    row = []
     for i, model in enumerate(models, 1):
         prefix = "➤ " if current_model and model == current_model else "  "
-        print(f"{prefix}{i}. {model}")
+        num = str(i).rjust(num_width)
+        name = model.ljust(name_width)
+        cell_content = f"{num}. {name}"
+        if model in stable_models:
+            cell_content = f"\033[92m{cell_content}\033[0m"  # зелёный
+        cell = f"{prefix}{cell_content}".ljust(col_width + len(prefix))
+        row.append(cell)
+        if len(row) == cols:
+            print(" ".join(row))
+            row = []
+    if row:
+        print(" ".join(row))
 
 
 # Основной цикл чата
