@@ -1,3 +1,8 @@
+# conda activate allpy311
+# pip install dash-vtk pyvista numpy vtk
+
+# pyvista demos
+
 from pyvista import demos
 from pyvista import examples
 
