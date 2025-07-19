@@ -1,6 +1,7 @@
 # conda activate allpy311
-
 # pip install dash-vtk dash numpy vtk
+
+# This example aims to show how to load a vtkImageData using VTK and push it to the dash-vtk components for doing Volume rendering.
 
 import os
 import dash
