@@ -1,4 +1,24 @@
+# conda activate allpy311, allpy310
 
+# Локальный (оффлайн) переводчик документов и текста (PDF, DOCX, TXT)
+
+'''
+Для установки библиотек, используемых в предоставленном коде, выполните следующие команды:
+
+1. Базовые зависимости (обязательные для всех вариантов):
+pip install pdfplumber docx2txt argostranslate
+
+2. Для работы на CPU (стандартная установка):
+# Установка CPU-версии PyTorch (автоматически подтянется через argostranslate)
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+3. Для работы на GPU (требуется CUDA 11.8+):
+# Установка GPU-версии PyTorch
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+# Проверьте доступность GPU в Python после установки:
+python -c "import torch; print(torch.cuda.is_available())"
+'''
 
 import argostranslate.package, argostranslate.translate
 import pdfplumber
