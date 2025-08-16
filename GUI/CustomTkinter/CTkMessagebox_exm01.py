@@ -1,5 +1,7 @@
 # conda activate allpy311
 
+# pip install customtkinter CTkMessagebox
+
 '''
 Библиотека CTkMessagebox — это дополнение к библиотеке CustomTkinter, которая предоставляет современные настраиваемые
 элементы интерфейса для Python.
