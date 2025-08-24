@@ -1,7 +1,6 @@
-# conada activate allpy311
+# conda activate allpy311
 
 # python psw_generator.py --length 25
-
 
 '''
 Простой и эффективный скрипт, который создаёт криптографически безопасный пароль заданной длины.
