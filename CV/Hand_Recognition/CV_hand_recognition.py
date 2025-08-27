@@ -1,4 +1,4 @@
-# activate allpy311
+# activate allpy310_2 (тут установлена mediapipe)
 
 # pip install mediapipe (чтобы заработало)
 # pip install numpy==2.2.3 protobuf==5.29.5 - вернуть обратно как было в allpy311
@@ -6,7 +6,7 @@
 
 '''
 Работаете с MediaPipe - Используйте отдельное виртуальное окружение с numpy 1.26.4
-Работаете с notolog, opencv-headless иnumpy 2.x - Используйте другое окружение
+Работаете с notolog, opencv-headless и numpy 2.x - Используйте другое окружение
 '''
 
 import cv2
