@@ -1,4 +1,5 @@
 # conda activate OCRpy310
+# Извлечение данных из сканов паспортов, чеков, справок
 
 import cv2
 import pytesseract
