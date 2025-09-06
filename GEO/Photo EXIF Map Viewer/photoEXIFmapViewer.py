@@ -1,4 +1,4 @@
-# conda activate allpy311
+# conda activate cv311, allpy311
 
 import os
 import csv
