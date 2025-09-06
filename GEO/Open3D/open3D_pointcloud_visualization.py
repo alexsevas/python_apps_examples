@@ -1,4 +1,4 @@
-# conda activate py39test, 3dpy310
+# conda activate cv311, py39test, 3dpy310
 
 # conda create -n ENV tensorflow numpy==1.23.4 python=3.9 -y
 # pip install open3d laspy
