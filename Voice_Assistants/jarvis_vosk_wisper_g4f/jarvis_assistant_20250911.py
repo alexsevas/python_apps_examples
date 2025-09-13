@@ -1,4 +1,4 @@
-
+# conda activate xtts2
 
 """
 Jarvis-like async voice assistant (single-file).
