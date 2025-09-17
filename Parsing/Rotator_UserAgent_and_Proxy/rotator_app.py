@@ -1,3 +1,7 @@
+# conda activate allpy311
+
+# python rotator_app.py urls.txt user_agents.txt proxies.txt
+
 '''
 Cкрипт, случайно чередующий User-Agent и прокси для каждого запроса,
 чтобы обойти блокировки и ограничители при массовом сборе данных
@@ -8,8 +12,6 @@ Cкрипт, случайно чередующий User-Agent и прокси д
 - Повышает анонимность: меняется IP + заголовки
 - Полезен для OSINT, скрейпинга, разведки и обхода банов
 '''
-
-# python rotator_app.py urls.txt user_agents.txt proxies.txt
 
 import requests, random
 from itertools import cycle
