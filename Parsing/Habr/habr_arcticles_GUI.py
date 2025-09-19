@@ -2,67 +2,119 @@
 
 # pip install requests beautifulsoup4 PyQt5
 
-'''
-GUI-парсер (на PyQt5) habr.ru:
-- Позволяет выбрать хаб (ввод URL вручную или из списка популярных)
-- Включить/выключить пагинацию (парсить все страницы или только первую)
-- Показывает результаты в таблице: название, ссылка, автор, дата
-- Сохраняет результат в CSV: articles_YYYY-MM-DD_HH-MM-SS.csv
-'''
+# GUI-парсер (на PyQt5) habr.ru
+
 
 import sys
 import csv
 import time
+import re
 from datetime import datetime
-from urllib.parse import urljoin, urlparse, parse_qs, urlencode
+from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup
 from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QPushButton, QLabel, QLineEdit, QTableWidget, QTableWidgetItem,
-    QCheckBox, QMessageBox, QFileDialog, QHeaderView, QComboBox
+    QCheckBox, QMessageBox, QFileDialog, QHeaderView, QComboBox,
+    QSpinBox, QGroupBox, QFormLayout, QProgressBar, QStatusBar
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 
 
 class HabrParserThread(QThread):
-    # Сигналы для передачи данных в GUI
-    finished = pyqtSignal(list)
+    finished = pyqtSignal()
     error = pyqtSignal(str)
-    progress = pyqtSignal(str)
+    progress = pyqtSignal(str, int, int)
+    page_parsed = pyqtSignal(list, int)
+    total_pages_detected = pyqtSignal(int)
 
-    def __init__(self, base_url, paginate):
+    def __init__(self, base_url, max_pages):
         super().__init__()
         self.base_url = base_url.rstrip('/')
-        self.paginate = paginate
+        self.max_pages = max_pages
         self.headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
         }
+        self.articles_global_index = 0
 
     def run(self):
         try:
-            articles = self.parse_hub(self.base_url, self.paginate)
-            self.finished.emit(articles)
+            first_page_articles, total_pages = self.parse_first_page()
+            self.total_pages_detected.emit(total_pages)
+
+            if self.max_pages > total_pages:
+                self.max_pages = total_pages
+
+            for article in first_page_articles:
+                self.articles_global_index += 1
+                article['global_index'] = self.articles_global_index
+            self.page_parsed.emit(first_page_articles, 1)
+
+            for page_num in range(2, self.max_pages + 1):
+                if self.isInterruptionRequested():
+                    break
+
+                self.progress.emit(f"Парсинг страницы {page_num} из {self.max_pages}...", page_num, self.max_pages)
+                articles = self.parse_page(page_num)
+                for article in articles:
+                    self.articles_global_index += 1
+                    article['global_index'] = self.articles_global_index
+                self.page_parsed.emit(articles, page_num)
+                time.sleep(0.3)
+
+            self.finished.emit()
         except Exception as e:
             self.error.emit(str(e))
 
-    def get_page_articles(self, url):
-        """Парсит одну страницу хаба и возвращает список статей"""
+    def parse_first_page(self):
+        try:
+            response = requests.get(self.base_url, headers=self.headers, timeout=10)
+            response.raise_for_status()
+            soup = BeautifulSoup(response.text, 'html.parser')
+            total_pages = self.get_total_pages(soup)
+            articles = self.extract_articles(soup)
+            return articles, total_pages
+        except Exception:
+            return [], 1
+
+    def get_total_pages(self, soup):
+        pagination = soup.find('div', class_='tm-pagination')
+        if not pagination:
+            return 1
+
+        page_links = pagination.find_all('a', class_='tm-pagination__page')
+        page_numbers = []
+        for link in page_links:
+            text = link.get_text(strip=True)
+            if text.isdigit():
+                page_numbers.append(int(text))
+
+        return max(page_numbers) if page_numbers else 1
+
+    def parse_page(self, page_num):
+        if page_num == 1:
+            url = self.base_url
+        else:
+            base = self.base_url.rstrip('/')
+            if '/page' in base:
+                base = base[:base.rfind('/page')]
+            url = f"{base}/page{page_num}/"
+
         try:
             response = requests.get(url, headers=self.headers, timeout=10)
             response.raise_for_status()
-        except requests.RequestException as e:
-            self.progress.emit(f"Ошибка загрузки {url}: {e}")
+            soup = BeautifulSoup(response.text, 'html.parser')
+            return self.extract_articles(soup)
+        except Exception:
             return []
 
-        soup = BeautifulSoup(response.text, 'html.parser')
+    def extract_articles(self, soup):
         articles = soup.find_all('article', {'class': lambda x: x and 'tm-articles-list__item' in x})
-
         page_articles = []
 
         for article in articles:
-            # Заголовок и ссылка
             title_tag = article.find('a', class_='tm-title__link')
             if not title_tag:
                 continue
@@ -70,15 +122,21 @@ class HabrParserThread(QThread):
             relative_url = title_tag['href']
             full_url = urljoin("https://habr.com", relative_url)
 
-            # Автор
+            # 👇 Извлекаем ID статьи из URL
+            article_id = "N/A"
+            match = re.search(r'/articles/(\d+)/?$', relative_url)
+            if match:
+                article_id = match.group(1)
+
             author_tag = article.find('a', class_='tm-user-info__username')
             author = author_tag.get_text(strip=True) if author_tag else "Неизвестен"
 
-            # Дата
             time_tag = article.find('time')
             pub_date = time_tag['datetime'] if time_tag and time_tag.get('datetime') else "Неизвестна"
 
             page_articles.append({
+                'global_index': 0,
+                'article_id': article_id,  # 👈 ДОБАВЛЕНО
                 'title': title,
                 'url': full_url,
                 'author': author,
@@ -87,62 +145,25 @@ class HabrParserThread(QThread):
 
         return page_articles
 
-    def get_next_page_url(self, current_url, soup):
-        """Находит ссылку на следующую страницу, если есть"""
-        next_button = soup.find('a', class_='tm-pagination__page', attrs={'rel': 'next'})
-        if not next_button or not next_button.get('href'):
-            return None
-
-        next_relative = next_button['href']
-        next_url = urljoin("https://habr.com", next_relative)
-        return next_url
-
-    def parse_hub(self, start_url, paginate):
-        """Основной метод парсинга хаба"""
-        all_articles = []
-        current_url = start_url
-        page_num = 1
-
-        while current_url:
-            self.progress.emit(f"Парсинг страницы {page_num}: {current_url}")
-            articles = self.get_page_articles(current_url)
-            all_articles.extend(articles)
-
-            if not paginate:
-                break  # Только первая страница
-
-            # Переход на следующую страницу
-            try:
-                response = requests.get(current_url, headers=self.headers, timeout=10)
-                soup = BeautifulSoup(response.text, 'html.parser')
-                next_url = self.get_next_page_url(current_url, soup)
-                if not next_url or next_url == current_url:
-                    break
-                current_url = next_url
-                page_num += 1
-                time.sleep(0.5)  # Пауза, чтобы не грузить сервер
-            except Exception:
-                break
-
-        return all_articles
-
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Habr Парсер Хабов")
-        self.setGeometry(100, 100, 1000, 600)
+        self.setGeometry(100, 100, 1200, 700)
 
         self.articles = []
+        self.current_page_articles = []
 
-        # Центральный виджет
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        layout = QVBoxLayout(central_widget)
+        self.splitter = QSplitter(Qt.Horizontal)
+        self.setCentralWidget(self.splitter)
 
-        # Выбор хаба
-        hub_layout = QHBoxLayout()
-        hub_label = QLabel("URL хаба:")
+        left_widget = QWidget()
+        left_layout = QVBoxLayout(left_widget)
+
+        settings_group = QGroupBox("Настройки парсинга")
+        settings_layout = QFormLayout()
+
         self.hub_combo = QComboBox()
         self.hub_combo.setEditable(True)
         popular_hubs = [
@@ -153,38 +174,65 @@ class MainWindow(QMainWindow):
             "https://habr.com/ru/hubs/javascript/articles/",
         ]
         self.hub_combo.addItems(popular_hubs)
-        hub_layout.addWidget(hub_label)
-        hub_layout.addWidget(self.hub_combo, 1)
+        settings_layout.addRow("URL хаба:", self.hub_combo)
 
-        # Чекбокс пагинации
-        self.paginate_checkbox = QCheckBox("Парсить все страницы")
+        pagination_layout = QHBoxLayout()
+        self.paginate_checkbox = QCheckBox("Пагинация")
         self.paginate_checkbox.setChecked(True)
-        hub_layout.addWidget(self.paginate_checkbox)
+        self.paginate_checkbox.stateChanged.connect(self.on_paginate_changed)
 
-        layout.addLayout(hub_layout)
+        self.pages_spin = QSpinBox()
+        self.pages_spin.setMinimum(1)
+        self.pages_spin.setMaximum(1)
+        self.pages_spin.setValue(1)
 
-        # Кнопка запуска
-        self.start_button = QPushButton("Запустить парсинг")
+        pagination_layout.addWidget(self.paginate_checkbox)
+        pagination_layout.addWidget(QLabel("Страниц:"))
+        pagination_layout.addWidget(self.pages_spin)
+        pagination_layout.addStretch()
+
+        settings_layout.addRow("Парсинг:", pagination_layout)
+        settings_group.setLayout(settings_layout)
+        left_layout.addWidget(settings_group)
+
+        self.start_button = QPushButton("▶️ Запустить парсинг")
         self.start_button.clicked.connect(self.start_parsing)
-        layout.addWidget(self.start_button)
+        left_layout.addWidget(self.start_button)
 
-        # Статус
-        self.status_label = QLabel("Готов к парсингу")
-        layout.addWidget(self.status_label)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setValue(0)
+        left_layout.addWidget(self.progress_bar)
 
-        # Таблица результатов
+        # 👇 Обновлённые заголовки: добавлен "ID"
         self.table = QTableWidget()
-        self.table.setColumnCount(4)
-        self.table.setHorizontalHeaderLabels(["Название статьи", "Ссылка", "Автор", "Дата"])
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.table.setSortingEnabled(True)
-        layout.addWidget(self.table, 1)
+        self.table.setColumnCount(6)
+        self.table.setHorizontalHeaderLabels(["№", "ID", "Название", "Ссылка", "Автор", "Дата"])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        self.table.setSortingEnabled(False)
+        left_layout.addWidget(self.table, 1)
 
-        # Кнопка сохранения
-        self.save_button = QPushButton("Сохранить в CSV")
+        self.save_button = QPushButton("💾 Сохранить в CSV")
         self.save_button.clicked.connect(self.save_to_csv)
         self.save_button.setEnabled(False)
-        layout.addWidget(self.save_button)
+        left_layout.addWidget(self.save_button)
+
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
+        placeholder = QLabel("Правая панель (можно использовать позже)")
+        placeholder.setAlignment(Qt.AlignCenter)
+        right_layout.addWidget(placeholder)
+
+        self.splitter.addWidget(left_widget)
+        self.splitter.addWidget(right_widget)
+        self.splitter.setStretchFactor(0, 3)
+        self.splitter.setStretchFactor(1, 1)
+
+        self.status_bar = QStatusBar()
+        self.setStatusBar(self.status_bar)
+        self.status_bar.showMessage("Готов к парсингу")
+
+    def on_paginate_changed(self, state):
+        self.pages_spin.setEnabled(state == Qt.Checked)
 
     def start_parsing(self):
         url = self.hub_combo.currentText().strip()
@@ -192,36 +240,59 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Ошибка", "Введите URL хаба!")
             return
 
-        # Очищаем предыдущие данные
+        max_pages = self.pages_spin.value() if self.paginate_checkbox.isChecked() else 1
+
         self.articles = []
         self.table.setRowCount(0)
         self.save_button.setEnabled(False)
-        self.status_label.setText("Парсинг...")
+        self.progress_bar.setValue(0)
+        self.status_bar.showMessage("⏳ Начинаем парсинг...")
 
-        # Запускаем парсер в отдельном потоке
-        self.parser_thread = HabrParserThread(url, self.paginate_checkbox.isChecked())
+        self.parser_thread = HabrParserThread(url, max_pages)
         self.parser_thread.finished.connect(self.on_parsing_finished)
         self.parser_thread.error.connect(self.on_parsing_error)
-        self.parser_thread.progress.connect(self.status_label.setText)
+        self.parser_thread.progress.connect(self.update_progress)
+        self.parser_thread.page_parsed.connect(self.add_articles_to_table)
+        self.parser_thread.total_pages_detected.connect(self.update_max_pages)
         self.parser_thread.start()
 
-    def on_parsing_finished(self, articles):
-        self.articles = articles
-        self.display_articles()
-        self.status_label.setText(f"Готово! Найдено {len(articles)} статей.")
+    def update_max_pages(self, total_pages):
+        self.pages_spin.setMaximum(total_pages)
+        if self.pages_spin.value() > total_pages:
+            self.pages_spin.setValue(total_pages)
+        self.status_bar.showMessage(f"Обнаружено {total_pages} страниц. Парсим {self.pages_spin.value()}...")
+
+    def update_progress(self, message, current, total):
+        self.progress_bar.setMaximum(total)
+        self.progress_bar.setValue(current)
+        self.status_bar.showMessage(message)
+
+    def add_articles_to_table(self, articles, page_num):
+        current_row = self.table.rowCount()
+        self.table.setRowCount(current_row + len(articles))
+
+        for i, article in enumerate(articles):
+            row = current_row + i
+            # 👇 Обновлённый порядок: добавлено поле ID
+            self.table.setItem(row, 0, QTableWidgetItem(str(article['global_index'])))
+            self.table.setItem(row, 1, QTableWidgetItem(article['article_id']))
+            self.table.setItem(row, 2, QTableWidgetItem(article['title']))
+            self.table.setItem(row, 3, QTableWidgetItem(article['url']))
+            self.table.setItem(row, 4, QTableWidgetItem(article['author']))
+            self.table.setItem(row, 5, QTableWidgetItem(article['date']))
+
+        self.articles.extend(articles)
+        self.status_bar.showMessage(f"Добавлено {len(articles)} статей со страницы {page_num}. Всего: {len(self.articles)}")
+
+    def on_parsing_finished(self):
+        self.status_bar.showMessage(f"✅ Парсинг завершён! Всего собрано {len(self.articles)} статей.")
+        self.progress_bar.setValue(self.progress_bar.maximum())
         self.save_button.setEnabled(True)
+        self.table.setSortingEnabled(True)
 
     def on_parsing_error(self, error_msg):
         QMessageBox.critical(self, "Ошибка", f"Ошибка парсинга:\n{error_msg}")
-        self.status_label.setText("Ошибка!")
-
-    def display_articles(self):
-        self.table.setRowCount(len(self.articles))
-        for row, article in enumerate(self.articles):
-            self.table.setItem(row, 0, QTableWidgetItem(article['title']))
-            self.table.setItem(row, 1, QTableWidgetItem(article['url']))
-            self.table.setItem(row, 2, QTableWidgetItem(article['author']))
-            self.table.setItem(row, 3, QTableWidgetItem(article['date']))
+        self.status_bar.showMessage("❌ Ошибка!")
 
     def save_to_csv(self):
         if not self.articles:
@@ -243,16 +314,19 @@ class MainWindow(QMainWindow):
             return
 
         try:
+            # 👇 Добавлено поле 'article_id'
+            fieldnames = ['global_index', 'article_id', 'title', 'url', 'author', 'date']
             with open(file_path, 'w', newline='', encoding='utf-8-sig') as csvfile:
-                fieldnames = ['title', 'url', 'author', 'date']
                 writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
                 writer.writeheader()
                 for article in self.articles:
                     writer.writerow(article)
 
             QMessageBox.information(self, "Успех", f"Данные успешно сохранены в:\n{file_path}")
+            self.status_bar.showMessage(f"Файл сохранён: {file_path}")
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить файл:\n{e}")
+            self.status_bar.showMessage("❌ Ошибка сохранения!")
 
 
 if __name__ == "__main__":
