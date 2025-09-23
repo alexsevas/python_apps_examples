@@ -1,3 +1,6 @@
+# conda activate hydro_env
+# python 3.9.23
+
 from vispy import app, visuals, scene
 import numpy as np
 
