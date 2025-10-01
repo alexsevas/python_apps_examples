@@ -2,47 +2,27 @@
 
 # pip install pywin32
 
-
 import win32com.client
 import pythoncom
 
 
-def get_polyline_info(polyline_obj):
+def get_3d_polyline_vertices(polyline_obj):
     """
-    Извлекает информацию о полилинии: тип и координаты вершин.
+    Извлекает вершины из 3D полилинии (AcDb3dPolyline)
+    с помощью итеративного вызова Coordinate(i).
     """
-    info = {}
-    obj_name = polyline_obj.ObjectName
-
-    if obj_name == "AcDbPolyline":
-        # Это легковесная 2D полилиния (LWPOLYLINE)
-        # Координаты хранятся в одном плоском массиве: [x1, y1, x2, y2, ...]
-        coords = list(polyline_obj.Coordinates)
-        vertices = []
-        for i in range(0, len(coords), 2):
-            x, y = coords[i], coords[i + 1]
-            # Z-координата по умолчанию 0 для 2D полилинии
-            z = 0.0
-            vertices.append((x, y, z))
-        info['type'] = "2D Polyline (LWPOLYLINE)"
-        info['vertices'] = vertices
-
-    elif obj_name == "AcDb3dPolyline":
-        # Это 3D полилиния (POLYLINE)
-        # Вершины нужно перебирать по одной
-        vertices = []
-        for i in range(polyline_obj.Coordinates.Count):
-            vertex = polyline_obj.Coordinates[i]
-            vertices.append((vertex[0], vertex[1], vertex[2]))
-        info['type'] = "3D Polyline"
-        info['vertices'] = vertices
-
-    else:
-        # Неожиданный тип объекта
-        info['type'] = f"Unknown ({obj_name})"
-        info['vertices'] = []
-
-    return info
+    vertices = []
+    i = 0
+    while True:
+        try:
+            coord = polyline_obj.Coordinate(i)
+            # coord - это объект Point, преобразуем в кортеж
+            vertices.append((coord[0], coord[1], coord[2]))
+            i += 1
+        except:
+            # Выход из цикла, когда индекс больше не существует
+            break
+    return vertices
 
 
 def main():
@@ -51,10 +31,7 @@ def main():
     print("======================================================\n")
 
     try:
-        # Инициализация COM
         pythoncom.CoInitialize()
-
-        # Подключение к запущенному экземпляру AutoCAD/Civil 3D
         acad = win32com.client.GetActiveObject("AutoCAD.Application")
         doc = acad.ActiveDocument
         mspace = doc.ModelSpace
@@ -62,7 +39,7 @@ def main():
         print(f"[OK] Подключено к: {acad.Caption}")
         print(f"[OK] Анализ чертежа: {doc.Name}\n")
 
-        # Собираем все полилинии из пространства модели
+        # Собираем полилинии
         polylines = []
         for i in range(mspace.Count):
             try:
@@ -70,7 +47,6 @@ def main():
                 if obj.ObjectName in ["AcDbPolyline", "AcDb3dPolyline"]:
                     polylines.append(obj)
             except:
-                # Пропускаем объекты, которые не удалось прочитать
                 continue
 
         if not polylines:
@@ -78,45 +54,47 @@ def main():
             return
 
         print(f"Найдено полилиний: {len(polylines)}\n")
-
-        # Выводим пронумерованный список
         for idx, pl in enumerate(polylines, start=1):
             layer = getattr(pl, 'Layer', 'Unknown')
-            print(f"{idx}. Слой: '{layer}'")
+            obj_type = "2D" if pl.ObjectName == "AcDbPolyline" else "3D"
+            print(f"{idx}. [{obj_type}] Слой: '{layer}'")
 
-        # Запрашиваем выбор у пользователя
+        # Цикл выбора
         while True:
+            choice = input(f"\nВведите номер полилинии (1-{len(polylines)}) или 'q' для выхода: ")
+            if choice.lower() == 'q':
+                break
+
             try:
-                choice = input(
-                    f"\nВведите номер полилинии для просмотра вершин (1-{len(polylines)}) или 'q' для выхода: ")
-                if choice.lower() == 'q':
-                    break
-
                 choice_idx = int(choice) - 1
-                if 0 <= choice_idx < len(polylines):
-                    selected_pl = polylines[choice_idx]
-                    info = get_polyline_info(selected_pl)
+                if not (0 <= choice_idx < len(polylines)):
+                    print("Неверный номер.")
+                    continue
 
-                    print(f"\n--- Информация о полилинии ---")
-                    print(f"Тип: {info['type']}")
-                    print(f"Количество вершин: {len(info['vertices'])}")
-                    print("Координаты вершин (X, Y, Z):")
-                    for v_idx, (x, y, z) in enumerate(info['vertices'], start=1):
-                        print(f"  {v_idx}: ({x:.3f}, {y:.3f}, {z:.3f})")
-                    print("\n" + "-" * 40)
-                else:
-                    print("Неверный номер. Попробуйте снова.")
+                selected_pl = polylines[choice_idx]
+                print(f"\n--- Информация о полилинии ---")
 
-            except ValueError:
-                print("Пожалуйста, введите число или 'q'.")
-            except Exception as e:
-                print(f"Ошибка при обработке полилинии: {e}")
+                if selected_pl.ObjectName == "AcDbPolyline":
+                    coords = list(selected_pl.Coordinates)
+                    vertices = [(coords[i], coords[i + 1], 0.0) for i in range(0, len(coords), 2)]
+                    print("Тип: 2D Polyline (LWPOLYLINE)")
+                else:  # AcDb3dPolyline
+                    vertices = get_3d_polyline_vertices(selected_pl)
+                    print("Тип: 3D Polyline")
+
+                print(f"Количество вершин: {len(vertices)}")
+                print("Координаты вершин (X, Y, Z):")
+                for v_idx, (x, y, z) in enumerate(vertices, start=1):
+                    print(f"  {v_idx}: ({x:.3f}, {y:.3f}, {z:.3f})")
+                print("\n" + "-" * 40)
+
+            except Exception as inner_e:
+                print(f"Ошибка при обработке полилинии: {inner_e}")
 
     except Exception as e:
         print(f"[ERR] Ошибка: {e}")
         print("Убедитесь, что Civil 3D запущен и открыт чертеж!")
     finally:
-        # Завершаем работу с COM
         pythoncom.CoUninitialize()
 
 
