@@ -2,8 +2,11 @@
 
 # pip install pywin32
 
+
 import win32com.client
 import pythoncom
+import csv
+import os
 
 
 def get_3d_polyline_vertices(polyline_obj):
@@ -16,13 +19,28 @@ def get_3d_polyline_vertices(polyline_obj):
     while True:
         try:
             coord = polyline_obj.Coordinate(i)
-            # coord - это объект Point, преобразуем в кортеж
             vertices.append((coord[0], coord[1], coord[2]))
             i += 1
         except:
-            # Выход из цикла, когда индекс больше не существует
             break
     return vertices
+
+
+def save_vertices_to_csv(vertices, filename):
+    """
+    Сохраняет список вершин в CSV-файл.
+    """
+    try:
+        with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
+            writer = csv.writer(csvfile)
+            # Записываем заголовок
+            writer.writerow(['X', 'Y', 'Z'])
+            # Записываем координаты
+            for x, y, z in vertices:
+                writer.writerow([f"{x:.6f}", f"{y:.6f}", f"{z:.6f}"])
+        print(f"[OK] Данные успешно сохранены в файл: {os.path.abspath(filename)}")
+    except Exception as e:
+        print(f"[ERR] Не удалось сохранить файл: {e}")
 
 
 def main():
@@ -86,6 +104,19 @@ def main():
                 print("Координаты вершин (X, Y, Z):")
                 for v_idx, (x, y, z) in enumerate(vertices, start=1):
                     print(f"  {v_idx}: ({x:.3f}, {y:.3f}, {z:.3f})")
+
+                # --- Блок сохранения в файл ---
+                save_choice = input("\nСохранить координаты в CSV-файл? (y/n): ").strip().lower()
+                if save_choice in ['y', 'yes', 'да']:
+                    default_name = f"polyline_{choice_idx + 1}.csv"
+                    filename = input(f"Введите имя файла (по умолчанию '{default_name}'): ").strip()
+                    if not filename:
+                        filename = default_name
+                    # Добавляем расширение .csv, если его нет
+                    if not filename.lower().endswith('.csv'):
+                        filename += '.csv'
+                    save_vertices_to_csv(vertices, filename)
+
                 print("\n" + "-" * 40)
 
             except Exception as inner_e:
