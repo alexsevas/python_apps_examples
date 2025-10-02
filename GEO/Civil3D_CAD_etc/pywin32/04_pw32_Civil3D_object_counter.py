@@ -103,6 +103,22 @@ def main():
 def convert_civil_object_name(technical_name):
     """Преобразует технические имена объектов Civil 3D в понятные пользователю названия."""
     civil_map = {
+        # === Точки COGO ===
+        "AeccDbCogoPoint": "Civil 3D: Точка COGO (AeccDbCogoPoint)",
+
+        # === Разрезы (Sections) ===
+        "AeccDbSection": "Civil 3D: Разрез (Section) (AeccDbSection)",
+        "AeccDbSectionOffsetLabeling": "Civil 3D: Маркировка смещения разреза (AeccDbSectionOffsetLabeling)",
+        "AeccDbSectionSegmentLabeling": "Civil 3D: Маркировка сегмента разреза (AeccDbSectionSegmentLabeling)",
+        "AeccDbSectionGradeBreakLabeling": "Civil 3D: Маркировка перелома уклона (AeccDbSectionGradeBreakLabeling)",
+
+        # === Листы и компоновки ===
+        "AeccDbSheet": "Civil 3D: Лист (Sheet) (AeccDbSheet)",
+
+        # === Линии и группы разрезов ===
+        "AeccDbSampleLineGroup": "Civil 3D: Группа линий разреза (AeccDbSampleLineGroup)",
+        "AeccDbSampleLineLabeling": "Civil 3D: Маркировка линии разреза (AeccDbSampleLineLabeling)",
+
         # === Поверхности (Surfaces) ===
         "AeccDbSurfaceTin": "Civil 3D: Поверхность TIN (AeccDbSurfaceTin)",
         "AeccDbSurfaceGrid": "Civil 3D: Поверхность Grid (AeccDbSurfaceGrid)",
@@ -139,7 +155,7 @@ def convert_civil_object_name(technical_name):
         "AeccDbParcel": "Civil 3D: Земельный участок (AeccDbParcel)",
         "AeccDbParcelSegment": "Civil 3D: Сегмент границы участка (AeccDbParcelSegment)",
 
-        # === Разрезы (Sections) ===
+        # === Виды разрезов (Section Views) ===
         "AeccDbSectionView": "Civil 3D: Вид разреза (AeccDbSectionView)",
         "AeccDbSampleLine": "Civil 3D: Линия разреза (AeccDbSampleLine)",
         "AeccDbViewFrameGroup": "Civil 3D: Группа рамок разрезов (AeccDbViewFrameGroup)",
@@ -156,27 +172,64 @@ def convert_civil_object_name(technical_name):
         "AeccDbProfileViewLabel": "Civil 3D: Маркировка в виде профиля (AeccDbProfileViewLabel)",
     }
 
-    # Если тип не найден в словаре, возвращаем обобщенное название с техническим именем
     return civil_map.get(technical_name, f"Civil 3D: Неизвестный объект ({technical_name})")
 
 
 def convert_autocad_object_name(technical_name):
-    """Преобразует имена базовых объектов AutoCAD."""
+    """Преобразует технические имена базовых объектов AutoCAD в понятные пользователю названия."""
     name_map = {
-        "AcDbLine": "Линия (Line)",
-        "AcDbPolyline": "2D Полилиния (LWPolyline)",
-        "AcDb3dPolyline": "3D Полилиния (3DPoly)",
-        "AcDbCircle": "Окружность (Circle)",
-        "AcDbArc": "Дуга (Arc)",
-        "AcDbText": "Текст (Text)",
-        "AcDbMText": "Многострочный текст (MText)",
-        "AcDbPoint": "Точка (Point)",
-        "AcDbHatch": "Штриховка (Hatch)",
-        "AcDbBlockReference": "Вставка блока (Block Reference)",
-        "AcDb3dSolid": "3D Тело (3D Solid)",
-        "AcDbRasterImage": "Растровое изображение (Raster Image)",
+        # === Геометрия ===
+        "AcDbLine": "AutoCAD: Линия (AcDbLine)",
+        "AcDbPolyline": "AutoCAD: 2D Полилиния (LWPolyline) (AcDbPolyline)",
+        "AcDb3dPolyline": "AutoCAD: 3D Полилиния (3DPoly) (AcDb3dPolyline)",
+        "AcDbCircle": "AutoCAD: Окружность (AcDbCircle)",
+        "AcDbArc": "AutoCAD: Дуга (AcDbArc)",
+        "AcDbEllipse": "AutoCAD: Эллипс (AcDbEllipse)",
+        "AcDbSpline": "AutoCAD: Сплайн (AcDbSpline)",
+        "AcDbXline": "AutoCAD: Вспомогательная линия (XLine) (AcDbXline)",
+        "AcDbRay": "AutoCAD: Луч (Ray) (AcDbRay)",
+
+        # === Текст и аннотации ===
+        "AcDbText": "AutoCAD: Текст (AcDbText)",
+        "AcDbMText": "AutoCAD: Многострочный текст (MText) (AcDbMText)",
+        "AcDbMLeader": "AutoCAD: Выноска с полилинией (MLeader) (AcDbMLeader)",
+        "AcDbLeader": "AutoCAD: Выноска (Leader) (AcDbLeader)",
+
+        # === Точки и штриховки ===
+        "AcDbPoint": "AutoCAD: Точка (AcDbPoint)",
+        "AcDbHatch": "AutoCAD: Штриховка (AcDbHatch)",
+        "AcDbSolid": "AutoCAD: Заливка (2D Face) (AcDbSolid)",
+        "AcDbWipeout": "AutoCAD: Маска (Wipeout) (AcDbWipeout)",
+
+        # === Блоки и OLE ===
+        "AcDbBlockReference": "AutoCAD: Вставка блока (Block Reference) (AcDbBlockReference)",
+        "AcDbAttributeDefinition": "AutoCAD: Определение атрибута (Attribute Definition) (AcDbAttributeDefinition)",
+        "AcDbAttribute": "AutoCAD: Атрибут (Attribute) (AcDbAttribute)",
+        "AcDbOle2Frame": "AutoCAD: Вставка OLE-объекта (AcDbOle2Frame)",
+
+        # === Размеры ===
+        "AcDbAlignedDimension": "AutoCAD: Выравненный размер (AcDbAlignedDimension)",
+        "AcDbRotatedDimension": "AutoCAD: Повернутый размер (AcDbRotatedDimension)",
+        "AcDbRadialDimension": "AutoCAD: Радиальный размер (AcDbRadialDimension)",
+        "AcDbDiametricDimension": "AutoCAD: Диаметральный размер (AcDbDiametricDimension)",
+        "AcDbAngularDimension": "AutoCAD: Угловой размер (AcDbAngularDimension)",
+        "AcDbOrdinateDimension": "AutoCAD: Базовый размер (Ordinate) (AcDbOrdinateDimension)",
+
+        # === 3D объекты ===
+        "AcDb3dSolid": "AutoCAD: 3D Тело (AcDb3dSolid)",
+        "AcDbRegion": "AutoCAD: Регион (AcDbRegion)",
+        "AcDbSurface": "AutoCAD: Поверхность (AcDbSurface)",
+        "AcDb3dFace": "AutoCAD: 3D Грань (AcDb3dFace)",
+
+        # === Растровые изображения ===
+        "AcDbRasterImage": "AutoCAD: Растровое изображение (AcDbRasterImage)",
+
+        # === Прочее ===
+        "AcDbViewport": "AutoCAD: Видовой экран (Viewport) (AcDbViewport)",
+        "AcDbGroup": "AutoCAD: Группа объектов (Group) (AcDbGroup)",
     }
-    return name_map.get(technical_name, technical_name)
+
+    return name_map.get(technical_name, f"AutoCAD: Неизвестный объект ({technical_name})")
 
 
 if __name__ == "__main__":
