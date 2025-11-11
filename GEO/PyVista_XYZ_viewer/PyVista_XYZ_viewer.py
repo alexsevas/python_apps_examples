@@ -1,83 +1,107 @@
 # conda activate cv311
 
-# Пример программы на Python, которая позволяет загрузить облако точек (в формате CSV или LAS/LAZ) и построить
-# TIN-поверхность (триангуляцию) с помощью библиотеки SciPy (или других средств).
-# Программа рассчитана на базовое использование: загрузка, фильтрация, построение триангуляции (триангуляция Делоне)
-# и визуализация с помощью matplotlib или pyvista.
+'''
+v0.0.2
+Расширенный вариант, позволяет:
+- загружать облака точек из разных форматов (например, CSV, LAS/LAZ)
+- учитывать геопривязку и разные системы координат
+- строить TIN-поверхность и визуализировать её с помощью PyVista
+- обеспечивать базовую инфраструктуру, которую можно расширить под конкретные задачи
+
+v0.0.01
+Пример программы на Python, которая позволяет загрузить облако точек (в формате CSV или LAS/LAZ) и построить
+TIN-поверхность (триангуляцию) с помощью библиотеки SciPy (или других средств).
+Программа рассчитана на базовое использование: загрузка, фильтрация, построение триангуляции (триангуляция Делоне)
+и визуализация с помощью matplotlib или pyvista.
+'''
 
 
 import numpy as np
+import os
 from scipy.spatial import Delaunay
-import matplotlib.pyplot as plt
+import pyvista as pv
+import laspy
+import rasterio
+from pyproj import Transformer
 
-# Для трёхмерной визуализации
-try:
-    import pyvista as pv
-    use_pyvista = True
-except ImportError:
-    use_pyvista = False
 
-def load_point_cloud_csv(path, x_idx=0, y_idx=1, z_idx=2, delimiter=',', skip_header=0):
-    """
-    Загружает облако точек из CSV-файла.
-    path – путь к файлу
-    x_idx, y_idx, z_idx – индексы столбцов
-    """
+def load_points_from_csv(path, x_idx=0, y_idx=1, z_idx=2,
+                         delimiter=',', skip_header=0):
     data = np.loadtxt(path, delimiter=delimiter, skiprows=skip_header)
     pts = data[:, [x_idx, y_idx, z_idx]]
     return pts
 
-def filter_points(pts, z_min=None, z_max=None):
-    """
-    Простейшая фильтрация по высоте Z.
-    """
-    if z_min is not None:
-        pts = pts[pts[:,2] >= z_min]
-    if z_max is not None:
-        pts = pts[pts[:,2] <= z_max]
-    return pts
 
-def build_tin(pts_xy, pts_z):
-    """
-    Строит Delaunay-триангуляцию по проекции XY, потом возвращает вершины + треугольники.
-    """
-    tri = Delaunay(pts_xy)
-    triangles = tri.simplices
-    return triangles
+def load_points_from_las(path):
+    # LAS/LAZ support via laspy
+    las = laspy.read(path)
+    # las.x, las.y, las.z are scaled values
+    xs = las.x
+    ys = las.y
+    zs = las.z
+    pts = np.vstack((xs, ys, zs)).T
+    # Check for CRS: las.header has .crs or .vlrs
+    try:
+        crs = las.header.parse_crs()
+    except Exception:
+        crs = None
+    return pts, crs
 
-def visualize_tin(pts, triangles):
-    """
-    Визуализация TIN.
-    """
-    if use_pyvista:
-        mesh = pv.PolyData(pts, np.hstack([np.full((triangles.shape[0],1),3), triangles]).astype(np.int64))
-        mesh.point_data["Z"] = pts[:,2]
-        mesh.plot(scalars="Z", show_edges=True)
-    else:
-        fig = plt.figure()
-        ax = fig.add_subplot(111, projection='3d')
-        ax.plot_trisurf(pts[:,0], pts[:,1], pts[:,2], triangles=triangles, cmap='viridis', edgecolor='none')
-        ax.set_xlabel('X')
-        ax.set_ylabel('Y')
-        ax.set_zlabel('Z')
-        plt.show()
+
+def reproject_points(pts, src_crs, dst_crs="EPSG:4326"):
+    # pts: Nx3 numpy array; src_crs and dst_crs in PROJ format
+    transformer = Transformer.from_crs(src_crs, dst_crs, always_xy=True)
+    xs, ys = transformer.transform(pts[:, 0], pts[:, 1])
+    zs = pts[:, 2]
+    return np.vstack((xs, ys, zs)).T
+
+
+def build_tin(pts):
+    """Построить Delaunay-триангуляцию по XY и возвратить индексы треугольников."""
+    tri = Delaunay(pts[:, :2])
+    return tri.simplices
+
+
+def visualize_tin(pts, triangles, show_edges=True, cmap="viridis"):
+    mesh = pv.PolyData(pts, np.hstack([
+        np.full((triangles.shape[0], 1), 3, dtype=np.int64),
+        triangles.astype(np.int64)
+    ]))
+    mesh["Z"] = pts[:, 2]
+    plotter = pv.Plotter()
+    plotter.add_mesh(mesh, scalars="Z", cmap=cmap, show_edges=show_edges)
+    plotter.add_axes()
+    plotter.show_grid()
+    plotter.show()
+
 
 def main():
-    # Пример: загрузка облака точек
-    pts = load_point_cloud_csv("points.csv", delimiter=',', skip_header=1)
+    # Настройки
+    input_path = "your_pointcloud.las"  # или .csv
+    dst_crs = "EPSG:4326"  # целевая система координат (например WGS84)
 
-    # Фильтрация – опционально
-    # pts = filter_points(pts, z_min=0)
+    ext = os.path.splitext(input_path)[1].lower()
+    if ext in [".las", ".laz"]:
+        pts, src_crs = load_points_from_las(input_path)
+    elif ext in [".csv", ".txt"]:
+        pts = load_points_from_csv(input_path, delimiter=',', skip_header=1)
+        src_crs = None
+    else:
+        raise ValueError(f"Unsupported input format: {ext}")
 
-    # Подготовка для триангуляции: используем только X,Y для триангуляции
-    pts_xy = pts[:, :2]
-    pts_z  = pts[:, 2]
+    # Если есть система координат — преобразуем
+    if src_crs is not None:
+        pts = reproject_points(pts, src_crs, dst_crs)
+
+    # Опционально: фильтрация или снижение плотности
+    # pts = pts[::5]  # например, взять каждую 5-ю точку
 
     # Построение TIN
-    triangles = build_tin(pts_xy, pts_z)
+    triangles = build_tin(pts)
 
     # Визуализация
     visualize_tin(pts, triangles)
+
 
 if __name__ == "__main__":
     main()
