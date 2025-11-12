@@ -1,6 +1,12 @@
 # conda activate cv311
 
 '''
+v0.0.3
+- импорт форматов .CSV/.TXT/.LAS/.LAZ/.PLY/.OBJ/.XYZ,
+- трансформирование координат через pyproj,
+- построение TIN-поверхность с помощью Delaunay-триангуляции (визуализация её в PyVista)
+- эспорт в OBJ, PLY, VTK и другие форматы
+
 v0.0.2
 Расширенный вариант, позволяет:
 - загружать облака точек из разных форматов (например, CSV, LAS/LAZ)
@@ -16,31 +22,27 @@ TIN-поверхность (триангуляцию) с помощью библ
 '''
 
 
-import numpy as np
 import os
+import numpy as np
 from scipy.spatial import Delaunay
 import pyvista as pv
 import laspy
-import rasterio
-from pyproj import Transformer
+from pyproj import Transformer, CRS
 
 
-def load_points_from_csv(path, x_idx=0, y_idx=1, z_idx=2,
-                         delimiter=',', skip_header=0):
+def load_points_csv(path, x_idx=0, y_idx=1, z_idx=2,
+                    delimiter=',', skip_header=0):
     data = np.loadtxt(path, delimiter=delimiter, skiprows=skip_header)
     pts = data[:, [x_idx, y_idx, z_idx]]
     return pts
 
 
-def load_points_from_las(path):
-    # LAS/LAZ support via laspy
+def load_points_las(path):
     las = laspy.read(path)
-    # las.x, las.y, las.z are scaled values
     xs = las.x
     ys = las.y
     zs = las.z
     pts = np.vstack((xs, ys, zs)).T
-    # Check for CRS: las.header has .crs or .vlrs
     try:
         crs = las.header.parse_crs()
     except Exception:
@@ -48,8 +50,18 @@ def load_points_from_las(path):
     return pts, crs
 
 
+def load_points_other(path):
+    # Например, .xyz или .txt с тремя колонками
+    ext = os.path.splitext(path)[1].lower()
+    if ext in ['.xyz', '.txt']:
+        return load_points_csv(path, delimiter=' ', skip_header=0), None
+    else:
+        raise ValueError(f"Не поддерживаемый формат: {ext}")
+
+
 def reproject_points(pts, src_crs, dst_crs="EPSG:4326"):
-    # pts: Nx3 numpy array; src_crs and dst_crs in PROJ format
+    if src_crs is None:
+        return pts
     transformer = Transformer.from_crs(src_crs, dst_crs, always_xy=True)
     xs, ys = transformer.transform(pts[:, 0], pts[:, 1])
     zs = pts[:, 2]
@@ -57,50 +69,58 @@ def reproject_points(pts, src_crs, dst_crs="EPSG:4326"):
 
 
 def build_tin(pts):
-    """Построить Delaunay-триангуляцию по XY и возвратить индексы треугольников."""
     tri = Delaunay(pts[:, :2])
     return tri.simplices
 
 
-def visualize_tin(pts, triangles, show_edges=True, cmap="viridis"):
-    mesh = pv.PolyData(pts, np.hstack([
-        np.full((triangles.shape[0], 1), 3, dtype=np.int64),
-        triangles.astype(np.int64)
-    ]))
-    mesh["Z"] = pts[:, 2]
+def visualize_and_export(pts, triangles,
+                         export_path=None,
+                         export_format="obj",
+                         show_edges=True, cmap="viridis"):
+    # Создаём mesh в PyVista
+    faces = np.hstack([np.full((triangles.shape[0], 1), 3, dtype=np.int64), triangles.astype(np.int64)])
+    mesh = pv.PolyData(pts, faces)
+    mesh.point_data["Z"] = pts[:, 2]
+
     plotter = pv.Plotter()
     plotter.add_mesh(mesh, scalars="Z", cmap=cmap, show_edges=show_edges)
     plotter.add_axes()
     plotter.show_grid()
+
+    if export_path:
+        ext = export_format.lower()
+        if ext in ["obj"]:
+            plotter.export_obj(export_path)
+            print(f"Экспортировано в OBJ: {export_path}")
+        else:
+            mesh.save(export_path)
+            print(f"Экспортировано в {export_format.upper()}: {export_path}")
+
     plotter.show()
 
 
 def main():
-    # Настройки
-    input_path = "your_pointcloud.las"  # или .csv
-    dst_crs = "EPSG:4326"  # целевая система координат (например WGS84)
+    input_path = "points.csv"  # замените на свой файл (.las/.laz/.csv/.xyz)
+    dst_crs = "EPSG:4326"
 
     ext = os.path.splitext(input_path)[1].lower()
-    if ext in [".las", ".laz"]:
-        pts, src_crs = load_points_from_las(input_path)
-    elif ext in [".csv", ".txt"]:
-        pts = load_points_from_csv(input_path, delimiter=',', skip_header=1)
+    if ext in ['.las', '.laz']:
+        pts, src_crs = load_points_las(input_path)
+    elif ext in ['.csv', '.txt']:
+        pts = load_points_csv(input_path, delimiter=',', skip_header=1)
         src_crs = None
     else:
-        raise ValueError(f"Unsupported input format: {ext}")
+        pts, src_crs = load_points_other(input_path)
 
-    # Если есть система координат — преобразуем
-    if src_crs is not None:
-        pts = reproject_points(pts, src_crs, dst_crs)
+    pts = reproject_points(pts, src_crs, dst_crs)
 
-    # Опционально: фильтрация или снижение плотности
-    # pts = pts[::5]  # например, взять каждую 5-ю точку
+    # Опционально: фильтрация / снижение плотности
+    # pts = pts[::10]
 
-    # Построение TIN
     triangles = build_tin(pts)
 
-    # Визуализация
-    visualize_tin(pts, triangles)
+    export_path = "tin_surface.obj"
+    visualize_and_export(pts, triangles, export_path=export_path, export_format="obj")
 
 
 if __name__ == "__main__":
