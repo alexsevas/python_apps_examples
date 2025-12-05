@@ -1,33 +1,3 @@
-'''
-Интерфейс: Окно разделено на две части. Слева — картинка оригинальной страницы PDF. Справа — редактируемое поле с переводом.
-Логика: Мы извлекаем текст из PDF блоками, отправляем в LLM, получаем перевод и отображаем справа.
-Бэкенд: Реализуем абстрактный класс-обертку для переключения между OpenAI, Mistral, Gemini, OpenRouter и g4f.
-
-1.Архитектура "Слева оригинал - Справа перевод":
-Почему так? Пытаться сгенерировать новый PDF с точным сохранением верстки, заменяя английский текст на русский — это невероятно сложная задача. Текст на русском обычно длиннее на 20-30%, он "поедет", наедет на картинки и таблицы.
-Решение: CAT-tool подход (Side-by-side) позволяет пользователю видеть оригинальный контекст (графики, схемы) слева и читать чистый текст справа.
-2.Многопоточность (QThread):
-Весь процесс общения с API вынесен в класс TranslatorWorker. Это гарантирует, что GUI не зависнет ("Не отвечает"), даже если сервер OpenAI думает над ответом 30 секунд.
-Используются pyqtSignal для безопасной передачи данных из потока в интерфейс.
-3.Универсальный движок (LLMEngine):
-Реализована поддержка 5 провайдеров, как вы просили.
-Для OpenRouter используется клиент OpenAI с измененным base_url.
-Для g4f реализована обертка, но учтите, что бесплатные библиотеки часто нестабильны.
-Для Mistral используется прямой REST API запрос.
-4.бработка PDF:
-Используется pymupdf (fitz).
-Для текста: page.get_text("blocks") — это позволяет извлекать текст абзацами, а не рваными строками, что критически важно для качества перевода нейросетью.
-Для картинки: page.get_pixmap() — рендерит страницу в высоком качестве для левой панели.
-5.Дополнительные фичи:
-Кэширование: Переведенные страницы сохраняются в памяти (self.translated_pages). Если вы вернетесь на страницу назад, она не будет переводиться заново.
-Живой просмотр: Если вы находитесь на странице 5, и поток только что закончил переводить страницу 5, текст в редакторе обновится автоматически.
-Редактирование: Поле справа — это QTextEdit. Вы можете править перевод руками, если нейросеть ошиблась, перед сохранением.
-Сохранение: Результат можно выгрузить в Markdown файл, где страницы разделены заголовками.
-'''
-
-# pip install PyQt5 pymupdf openai google-generativeai g4f requests markdown2
-
-
 import sys
 import os
 import time
@@ -38,24 +8,89 @@ import markdown2
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout,
                              QWidget, QTextEdit, QPushButton, QLabel, QProgressBar,
                              QComboBox, QLineEdit, QSplitter, QFileDialog, QMessageBox,
-                             QGroupBox, QFormLayout, QSpinBox)
+                             QGroupBox, QScrollArea, QShortcut)
 from PyQt5.QtCore import QThread, pyqtSignal, Qt, QSize
-from PyQt5.QtGui import QImage, QPixmap, QFont
+from PyQt5.QtGui import QImage, QPixmap, QFont, QKeySequence, QWheelEvent
 
 # Импорты API
 import openai
 import google.generativeai as genai
 import g4f
 
-# ================= ЛОГИКА LLM (БЭКЕНД) =================
+
+# ================= 1. ПРОДВИНУТЫЙ PDF VIEWER =================
+
+class PDFViewerWidget(QScrollArea):
+    """Виджет для просмотра PDF с зумом и скроллом"""
+
+    def __init__(self):
+        super().__init__()
+        self.setWidgetResizable(True)
+        self.setAlignment(Qt.AlignCenter)
+
+        # Контейнер для изображения
+        self.image_label = QLabel()
+        self.image_label.setAlignment(Qt.AlignCenter)
+        self.image_label.setStyleSheet("background-color: #555;")  # Темный фон
+        self.setWidget(self.image_label)
+
+        # Данные
+        self.current_pixmap = None  # Оригинал (QPixmap)
+        self.zoom_level = 1.0  # Текущий зум (1.0 = 100%)
+        self.pdf_page = None  # Ссылка на страницу fitz
+
+    def set_page(self, fitz_page):
+        self.pdf_page = fitz_page
+        self.render_page()
+
+    def render_page(self):
+        if not self.pdf_page:
+            return
+
+        # Рендерим с учетом зума прямо из вектора (для четкости)
+        # Стандартное разрешение PDF ~72 DPI. Zoom 1.0 = 72 DPI.
+        # matrix(2, 2) -> 144 DPI и т.д.
+        mat = fitz.Matrix(self.zoom_level * 1.5, self.zoom_level * 1.5)
+        pix = self.pdf_page.get_pixmap(matrix=mat)
+
+        # Конвертация в QImage -> QPixmap
+        img_data = pix.tobytes("ppm")
+        qimg = QImage.fromData(img_data)
+        self.current_pixmap = QPixmap.fromImage(qimg)
+
+        self.image_label.setPixmap(self.current_pixmap)
+        self.image_label.resize(self.current_pixmap.size())
+
+    def zoom_in(self):
+        self.zoom_level += 0.1
+        self.render_page()
+
+    def zoom_out(self):
+        if self.zoom_level > 0.2:
+            self.zoom_level -= 0.1
+            self.render_page()
+
+    def wheelEvent(self, event: QWheelEvent):
+        # Если зажат Ctrl - зумим
+        if event.modifiers() == Qt.ControlModifier:
+            delta = event.angleDelta().y()
+            if delta > 0:
+                self.zoom_in()
+            else:
+                self.zoom_out()
+            event.accept()
+        else:
+            # Иначе обычный скролл
+            super().wheelEvent(event)
+
+
+# ================= 2. ЛОГИКА LLM =================
 
 class LLMEngine:
     def __init__(self, provider, api_key, model_name):
         self.provider = provider
         self.api_key = api_key
         self.model_name = model_name
-
-        # Системный промпт для технического перевода
         self.system_prompt = (
             "You are a professional technical translator. Translate the following text "
             "from English to Russian. Preserve the original formatting structure (markdown). "
@@ -64,28 +99,21 @@ class LLMEngine:
         )
 
     def translate(self, text):
-        if not text.strip():
-            return ""
-
+        if not text.strip(): return ""
         try:
             if self.provider == "OpenAI":
                 client = openai.OpenAI(api_key=self.api_key)
                 response = client.chat.completions.create(
                     model=self.model_name,
-                    messages=[
-                        {"role": "system", "content": self.system_prompt},
-                        {"role": "user", "content": text}
-                    ]
+                    messages=[{"role": "system", "content": self.system_prompt}, {"role": "user", "content": text}]
                 )
                 return response.choices[0].message.content
 
             elif self.provider == "Mistral":
                 url = "https://api.mistral.ai/v1/chat/completions"
                 headers = {"Authorization": f"Bearer {self.api_key}"}
-                json_data = {
-                    "model": self.model_name,
-                    "messages": [{"role": "user", "content": f"{self.system_prompt}\n\nText:\n{text}"}]
-                }
+                json_data = {"model": self.model_name,
+                             "messages": [{"role": "user", "content": f"{self.system_prompt}\n\n{text}"}]}
                 response = requests.post(url, headers=headers, json=json_data)
                 response.raise_for_status()
                 return response.json()["choices"][0]["message"]["content"]
@@ -93,28 +121,17 @@ class LLMEngine:
             elif self.provider == "Gemini":
                 genai.configure(api_key=self.api_key)
                 model = genai.GenerativeModel(self.model_name)
-                # Gemini иногда капризен к системным промптам, подаем в user message
-                full_prompt = f"{self.system_prompt}\n\nTranslate this:\n{text}"
-                response = model.generate_content(full_prompt)
-                return response.text
+                return model.generate_content(f"{self.system_prompt}\n\nTranslate:\n{text}").text
 
             elif self.provider == "OpenRouter":
-                # OpenRouter совместим с OpenAI client, нужно только поменять base_url
-                client = openai.OpenAI(
-                    base_url="https://openrouter.ai/api/v1",
-                    api_key=self.api_key,
-                )
+                client = openai.OpenAI(base_url="https://openrouter.ai/api/v1", api_key=self.api_key)
                 response = client.chat.completions.create(
                     model=self.model_name,
-                    messages=[
-                        {"role": "system", "content": self.system_prompt},
-                        {"role": "user", "content": text}
-                    ]
+                    messages=[{"role": "system", "content": self.system_prompt}, {"role": "user", "content": text}]
                 )
                 return response.choices[0].message.content
 
             elif self.provider == "G4F (Free)":
-                # G4F не требует ключа, но требует выбора провайдера (Auto)
                 response = g4f.ChatCompletion.create(
                     model=self.model_name or g4f.models.gpt_4,
                     messages=[{"role": "user", "content": f"{self.system_prompt}\n\n{text}"}],
@@ -122,15 +139,77 @@ class LLMEngine:
                 return str(response)
 
         except Exception as e:
-            return f"[ОШИБКА ПЕРЕВОДА]: {str(e)}"
+            return f"[ОШИБКА]: {str(e)}"
+        return "[Ошибка]"
 
-        return "[Неизвестная ошибка]"
 
-# ================= ПОТОК ПЕРЕВОДА =================
+# ================= 3. ПОТОК СКАНИРОВАНИЯ МОДЕЛЕЙ =================
+
+class ModelFetcherWorker(QThread):
+    models_found = pyqtSignal(list)
+    error_occurred = pyqtSignal(str)
+
+    def __init__(self, provider, api_key):
+        super().__init__()
+        self.provider = provider
+        self.api_key = api_key
+
+    def run(self):
+        try:
+            models = []
+            if self.provider == "OpenAI":
+                client = openai.OpenAI(api_key=self.api_key)
+                # Фильтруем, берем только gpt модели
+                models = [m.id for m in client.models.list() if "gpt" in m.id]
+                models.sort(reverse=True)
+
+            elif self.provider == "Mistral":
+                url = "https://api.mistral.ai/v1/models"
+                headers = {"Authorization": f"Bearer {self.api_key}"}
+                resp = requests.get(url, headers=headers)
+                resp.raise_for_status()
+                models = [m["id"] for m in resp.json()["data"]]
+
+            elif self.provider == "Gemini":
+                genai.configure(api_key=self.api_key)
+                # Фильтруем только те, что умеют генерировать контент
+                models = [m.name.replace("models/", "") for m in genai.list_models()
+                          if 'generateContent' in m.supported_generation_methods]
+
+            elif self.provider == "OpenRouter":
+                # OpenRouter имеет endpoint /models
+                resp = requests.get("https://openrouter.ai/api/v1/models")
+                if resp.status_code == 200:
+                    data = resp.json()
+                    # OpenRouter возвращает много данных, берем id
+                    models = [m["id"] for m in data["data"]]
+                    models.sort()
+
+            elif self.provider == "G4F (Free)":
+                # Берем список из библиотеки
+                # g4f.models - это объект, нужно вытащить имена
+                # Основные рабочие модели
+                models = [
+                    "gpt-4", "gpt-4o", "gpt-3.5-turbo",
+                    "gemini-pro", "mixtral-8x7b",
+                    "claude-3-opus", "claude-3-sonnet"
+                ]
+                # Можно попробовать добавить все из _all_models, но их слишком много мусорных
+
+            if models:
+                self.models_found.emit(models)
+            else:
+                self.error_occurred.emit("Список моделей пуст")
+
+        except Exception as e:
+            self.error_occurred.emit(str(e))
+
+
+# ================= 4. ПОТОК ПЕРЕВОДА =================
 
 class TranslatorWorker(QThread):
-    progress_update = pyqtSignal(int, int) # текущая, всего
-    page_translated = pyqtSignal(int, str) # номер страницы, текст
+    progress_update = pyqtSignal(int, int)
+    page_translated = pyqtSignal(int, str)
     error_occurred = pyqtSignal(str)
     finished_task = pyqtSignal()
 
@@ -144,74 +223,56 @@ class TranslatorWorker(QThread):
     def run(self):
         try:
             doc = fitz.open(self.pdf_path)
-            total_pages = len(doc)
+            total = len(doc)
+            for i in range(self.start_page, total):
+                if not self.is_running: break
 
-            for page_num in range(self.start_page, total_pages):
-                if not self.is_running:
-                    break
+                # Извлекаем текст
+                page = doc.load_page(i)
+                text = ""
+                blocks = page.get_text("blocks", sort=True)
+                for b in blocks: text += b[4] + "\n\n"
 
-                page = doc.load_page(page_num)
-                # Получаем текст блоками, чтобы сохранить хоть какую-то структуру
-                # sort=True пытается упорядочить колонки
-                text_blocks = page.get_text("blocks", sort=True)
-
-                full_page_translation = ""
-
-                # Собираем текст страницы
-                raw_text = ""
-                for block in text_blocks:
-                    # block[4] - это текст
-                    raw_text += block[4] + "\n\n"
-
-                # Если страница пустая (например, картинка без OCR)
-                if not raw_text.strip():
-                    full_page_translation = "[Текст не найден или это изображение]"
+                if not text.strip():
+                    trans = "[Нет текста]"
                 else:
-                    # Переводим
-                    # Можно добавить разбивку на чанки, если страница огромная,
-                    # но обычно 1 страница PDF влезает в контекст современных моделей.
-                    full_page_translation = self.engine.translate(raw_text)
+                    trans = self.engine.translate(text)
 
-                self.page_translated.emit(page_num, full_page_translation)
-                self.progress_update.emit(page_num + 1, total_pages)
-
-                # Небольшая пауза, чтобы не дудосить API
-                time.sleep(0.5)
+                self.page_translated.emit(i, trans)
+                self.progress_update.emit(i + 1, total)
 
             doc.close()
             self.finished_task.emit()
-
         except Exception as e:
             self.error_occurred.emit(str(e))
 
     def stop(self):
         self.is_running = False
 
-# ================= ГЛАВНОЕ ОКНО =================
+
+# ================= 5. ГЛАВНОЕ ОКНО =================
 
 class PDFTranslatorApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("AI PDF Translator Pro (PyQt5)")
-        self.resize(1200, 800)
+        self.setWindowTitle("AI PDF Translator v0.2")
+        self.resize(1280, 850)
 
-        # Хранение данных
         self.pdf_doc = None
-        self.pdf_path = ""
-        self.translated_pages = {} # кэш: {page_num: text}
+        self.translated_pages = {}
         self.current_page = 0
-        self.worker = None
 
         self.init_ui()
+        self.setup_shortcuts()
 
     def init_ui(self):
-        main_widget = QWidget()
-        self.setCentralWidget(main_widget)
-        main_layout = QVBoxLayout(main_widget)
+        main = QWidget()
+        self.setCentralWidget(main)
+        layout = QVBoxLayout(main)
 
-        # 1. Панель настроек
-        settings_group = QGroupBox("Настройки нейросети")
-        settings_layout = QHBoxLayout()
+        # --- БЛОК НАСТРОЕК ---
+        settings_box = QGroupBox("Параметры AI")
+        h_layout = QHBoxLayout()
 
         self.combo_provider = QComboBox()
         self.combo_provider.addItems(["OpenAI", "Mistral", "Gemini", "OpenRouter", "G4F (Free)"])
@@ -221,27 +282,34 @@ class PDFTranslatorApp(QMainWindow):
         self.input_key.setPlaceholderText("API Key")
         self.input_key.setEchoMode(QLineEdit.Password)
 
-        self.input_model = QLineEdit()
-        self.input_model.setPlaceholderText("Model (e.g. gpt-4o, gemini-pro)")
-        self.input_model.setText("gpt-4o") # default
+        # Теперь это ComboBox
+        self.combo_model = QComboBox()
+        self.combo_model.setEditable(True)  # Можно писать руками
+        self.combo_model.setPlaceholderText("Выберите или введите модель")
 
-        settings_layout.addWidget(QLabel("Провайдер:"))
-        settings_layout.addWidget(self.combo_provider)
-        settings_layout.addWidget(QLabel("Ключ:"))
-        settings_layout.addWidget(self.input_key)
-        settings_layout.addWidget(QLabel("Модель:"))
-        settings_layout.addWidget(self.input_model)
+        # Кнопка сканирования
+        self.btn_scan = QPushButton("🔄")
+        self.btn_scan.setToolTip("Сканировать доступные модели")
+        self.btn_scan.setFixedWidth(40)
+        self.btn_scan.clicked.connect(self.scan_models)
 
-        settings_group.setLayout(settings_layout)
-        main_layout.addWidget(settings_group)
+        h_layout.addWidget(QLabel("Провайдер:"))
+        h_layout.addWidget(self.combo_provider)
+        h_layout.addWidget(QLabel("Ключ:"))
+        h_layout.addWidget(self.input_key)
+        h_layout.addWidget(QLabel("Модель:"))
+        h_layout.addWidget(self.combo_model)
+        h_layout.addWidget(self.btn_scan)
 
-        # 2. Панель управления файлом
-        file_toolbar = QHBoxLayout()
+        settings_box.setLayout(h_layout)
+        layout.addWidget(settings_box)
 
+        # --- ТУЛБАР ---
+        toolbar = QHBoxLayout()
         self.btn_open = QPushButton("📂 Открыть PDF")
         self.btn_open.clicked.connect(self.open_pdf)
 
-        self.btn_start = QPushButton("▶️ Начать перевод")
+        self.btn_start = QPushButton("▶️ Старт")
         self.btn_start.clicked.connect(self.start_translation)
         self.btn_start.setEnabled(False)
 
@@ -249,234 +317,235 @@ class PDFTranslatorApp(QMainWindow):
         self.btn_stop.clicked.connect(self.stop_translation)
         self.btn_stop.setEnabled(False)
 
-        self.btn_save = QPushButton("💾 Сохранить перевод")
+        self.btn_save = QPushButton("💾 Сохранить")
         self.btn_save.clicked.connect(self.save_translation)
         self.btn_save.setEnabled(False)
 
-        file_toolbar.addWidget(self.btn_open)
-        file_toolbar.addWidget(self.btn_start)
-        file_toolbar.addWidget(self.btn_stop)
-        file_toolbar.addWidget(self.btn_save)
-        file_toolbar.addStretch()
+        toolbar.addWidget(self.btn_open)
+        toolbar.addWidget(self.btn_start)
+        toolbar.addWidget(self.btn_stop)
+        toolbar.addWidget(self.btn_save)
+        toolbar.addStretch()
+        layout.addLayout(toolbar)
 
-        main_layout.addLayout(file_toolbar)
-
-        # 3. Рабочая область (Splitter)
+        # --- РАБОЧАЯ ЗОНА ---
         self.splitter = QSplitter(Qt.Horizontal)
 
-        # Левая часть - Оригинал (Картинка)
-        self.left_widget = QWidget()
-        l_layout = QVBoxLayout(self.left_widget)
-        l_layout.addWidget(QLabel("<b>Оригинал</b>"))
-        self.lbl_pdf_image = QLabel("Загрузите PDF")
-        self.lbl_pdf_image.setAlignment(Qt.AlignCenter)
-        self.lbl_pdf_image.setStyleSheet("background-color: #eee; border: 1px solid #ccc;")
-        l_layout.addWidget(self.lbl_pdf_image)
+        # Левая часть - PDF Viewer (кастомный виджет)
+        left_container = QWidget()
+        lc_layout = QVBoxLayout(left_container)
+        lc_layout.addWidget(QLabel("<b>Оригинал</b> (Ctrl + Wheel для зума)"))
 
-        # Правая часть - Перевод (Текст)
-        self.right_widget = QWidget()
-        r_layout = QVBoxLayout(self.right_widget)
-        r_layout.addWidget(QLabel("<b>Перевод (Markdown)</b>"))
+        self.pdf_viewer = PDFViewerWidget()
+        lc_layout.addWidget(self.pdf_viewer)
+
+        # Правая часть - Текст
+        right_container = QWidget()
+        rc_layout = QVBoxLayout(right_container)
+        rc_layout.addWidget(QLabel("<b>Перевод</b>"))
+
         self.text_editor = QTextEdit()
-        self.text_editor.setReadOnly(False) # Можно править вручную
         self.text_editor.setStyleSheet("font-size: 14px; font-family: Segoe UI;")
-        r_layout.addWidget(self.text_editor)
+        rc_layout.addWidget(self.text_editor)
 
-        self.splitter.addWidget(self.left_widget)
-        self.splitter.addWidget(self.right_widget)
+        self.splitter.addWidget(left_container)
+        self.splitter.addWidget(right_container)
         self.splitter.setStretchFactor(0, 1)
         self.splitter.setStretchFactor(1, 1)
 
-        main_layout.addWidget(self.splitter, stretch=1)
+        layout.addWidget(self.splitter, stretch=1)
 
-        # 4. Навигация по страницам
+        # --- НАВИГАЦИЯ ---
         nav_layout = QHBoxLayout()
-        self.btn_prev = QPushButton("<< Пред.")
+        self.btn_prev = QPushButton("<< Назад")
         self.btn_prev.clicked.connect(lambda: self.change_page(-1))
-        self.btn_next = QPushButton("След. >>")
+        self.btn_next = QPushButton("Вперед >>")
         self.btn_next.clicked.connect(lambda: self.change_page(1))
-        self.lbl_page_info = QLabel("Стр: 0 / 0")
+        self.lbl_page = QLabel("Стр: 0/0")
 
         nav_layout.addWidget(self.btn_prev)
-        nav_layout.addWidget(self.lbl_page_info)
+        nav_layout.addWidget(self.lbl_page)
         nav_layout.addWidget(self.btn_next)
+        layout.addLayout(nav_layout)
 
-        main_layout.addLayout(nav_layout)
+        # --- СТАТУС ---
+        self.progress = QProgressBar()
+        layout.addWidget(self.progress)
+        self.status = QLabel("Готов")
+        layout.addWidget(self.status)
 
-        # 5. Прогресс
-        self.progress_bar = QProgressBar()
-        main_layout.addWidget(self.progress_bar)
+        # Установка дефолтных моделей
+        self.on_provider_change("OpenAI")
 
-        self.status_bar = QLabel("Готов к работе")
-        main_layout.addWidget(self.status_bar)
+    def setup_shortcuts(self):
+        # Горячие клавиши для зума
+        self.shortcut_zoom_in = QShortcut(QKeySequence("Ctrl+="), self)
+        self.shortcut_zoom_in.activated.connect(self.pdf_viewer.zoom_in)
 
-    # --- Обработчики ---
+        self.shortcut_zoom_out = QShortcut(QKeySequence("Ctrl+-"), self)
+        self.shortcut_zoom_out.activated.connect(self.pdf_viewer.zoom_out)
+
+    # --- ЛОГИКА GUI ---
 
     def on_provider_change(self, text):
-        # Дефолтные модели для удобства
+        self.combo_model.clear()
+        self.input_key.setEnabled(True)
+        self.input_key.setPlaceholderText("Введите API Key")
+
         if text == "OpenAI":
-            self.input_model.setText("gpt-4o")
-            self.input_key.setEnabled(True)
+            self.combo_model.addItem("gpt-4o")
+            self.combo_model.addItem("gpt-3.5-turbo")
         elif text == "Mistral":
-            self.input_model.setText("mistral-large-latest")
-            self.input_key.setEnabled(True)
+            self.combo_model.addItem("mistral-large-latest")
         elif text == "Gemini":
-            self.input_model.setText("gemini-2.5-pro")
-            self.input_key.setEnabled(True)
+            self.combo_model.addItem("gemini-1.5-pro")
         elif text == "OpenRouter":
-            self.input_model.setText("anthropic/claude-3-opus")
-            self.input_key.setEnabled(True)
+            self.combo_model.addItem("anthropic/claude-3-opus")
         elif text == "G4F (Free)":
-            self.input_model.setText("") # Auto
             self.input_key.setEnabled(False)
             self.input_key.setPlaceholderText("Ключ не нужен")
+            self.combo_model.addItems(["gpt-4", "gpt-4o", "gemini-pro"])
+
+    def scan_models(self):
+        provider = self.combo_provider.currentText()
+        key = self.input_key.text().strip()
+
+        if provider != "G4F (Free)" and not key:
+            QMessageBox.warning(self, "Ошибка", "Для сканирования нужен API Key!")
+            return
+
+        self.status.setText(f"Сканирование моделей {provider}...")
+        self.btn_scan.setEnabled(False)
+        self.combo_provider.setEnabled(False)
+
+        self.fetcher = ModelFetcherWorker(provider, key)
+        self.fetcher.models_found.connect(self.on_models_found)
+        self.fetcher.error_occurred.connect(self.on_scan_error)
+        self.fetcher.start()
+
+    def on_models_found(self, models):
+        self.combo_model.clear()
+        self.combo_model.addItems(models)
+        self.status.setText(f"Найдено {len(models)} моделей.")
+        self.btn_scan.setEnabled(True)
+        self.combo_provider.setEnabled(True)
+        QMessageBox.information(self, "Успех", f"Список моделей обновлен ({len(models)} шт.)")
+
+    def on_scan_error(self, err):
+        self.status.setText("Ошибка сканирования")
+        self.btn_scan.setEnabled(True)
+        self.combo_provider.setEnabled(True)
+        QMessageBox.warning(self, "Ошибка API", f"Не удалось получить список моделей:\n{err}")
 
     def open_pdf(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Открыть PDF", "", "PDF Files (*.pdf)")
+        path, _ = QFileDialog.getOpenFileName(self, "PDF", "", "*.pdf")
         if path:
             self.pdf_path = path
             try:
                 self.pdf_doc = fitz.open(path)
                 self.translated_pages = {}
                 self.current_page = 0
-                self.update_page_view()
+                self.update_view()
                 self.btn_start.setEnabled(True)
-                self.status_bar.setText(f"Загружен: {os.path.basename(path)}")
-                self.progress_bar.setValue(0)
+                self.status.setText(f"Файл: {os.path.basename(path)}")
+                self.progress.setValue(0)
             except Exception as e:
-                QMessageBox.critical(self, "Ошибка", f"Не удалось открыть PDF: {e}")
+                QMessageBox.critical(self, "Ошибка", str(e))
 
-    def update_page_view(self):
-        if not self.pdf_doc:
-            return
+    def update_view(self):
+        if not self.pdf_doc: return
 
-        # 1. Отображение оригинала (Рендер в картинку)
+        # Рендер PDF через наш крутой виджет
         page = self.pdf_doc.load_page(self.current_page)
-        pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5)) # Zoom для четкости
+        self.pdf_viewer.set_page(page)
 
-        # Конвертация в QImage
-        img_data = pix.tobytes("ppm")
-        qimg = QImage.fromData(img_data)
-        pixmap = QPixmap.fromImage(qimg)
-
-        # Масштабирование под размер лейбла
-        w = self.lbl_pdf_image.width()
-        h = self.lbl_pdf_image.height()
-        if w > 0 and h > 0:
-            self.lbl_pdf_image.setPixmap(pixmap.scaled(w, h, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        else:
-            self.lbl_pdf_image.setPixmap(pixmap)
-
-        # 2. Отображение перевода
-        if self.current_page in self.translated_pages:
-            self.text_editor.setPlainText(self.translated_pages[self.current_page])
-        else:
-            self.text_editor.setPlaceholderText("Эта страница еще не переведена...")
+        # Текст
+        txt = self.translated_pages.get(self.current_page, "")
+        if not txt:
+            self.text_editor.setPlaceholderText("Ожидание перевода...")
             self.text_editor.clear()
+        else:
+            self.text_editor.setPlainText(txt)
 
-        # 3. Инфо
-        self.lbl_page_info.setText(f"Стр: {self.current_page + 1} / {len(self.pdf_doc)}")
-
-        # Кнопки навигации
-        self.btn_prev.setEnabled(self.current_page > 0)
-        self.btn_next.setEnabled(self.current_page < len(self.pdf_doc) - 1)
+        self.lbl_page.setText(f"Стр: {self.current_page + 1}/{len(self.pdf_doc)}")
 
     def change_page(self, delta):
-        new_page = self.current_page + delta
-        if 0 <= new_page < len(self.pdf_doc):
-            self.current_page = new_page
-            self.update_page_view()
-
-    def resizeEvent(self, event):
-        # Обновляем картинку при ресайзе окна
-        self.update_page_view()
-        super().resizeEvent(event)
+        if not self.pdf_doc: return
+        new_p = self.current_page + delta
+        if 0 <= new_p < len(self.pdf_doc):
+            self.current_page = new_p
+            self.update_view()
 
     def start_translation(self):
         provider = self.combo_provider.currentText()
         key = self.input_key.text().strip()
-        model = self.input_model.text().strip()
+        model = self.combo_model.currentText().strip()
 
         if provider != "G4F (Free)" and not key:
-            QMessageBox.warning(self, "Внимание", "Введите API Key!")
+            QMessageBox.warning(self, "Ключ?", "Введите API Key!")
             return
 
-        self.status_bar.setText("Инициализация перевода...")
-
-        # Блокировка интерфейса
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(True)
         self.combo_provider.setEnabled(False)
+        self.combo_model.setEnabled(False)
+        self.input_key.setEnabled(False)
 
-        # Создаем движок
         engine = LLMEngine(provider, key, model)
-
-        # Запускаем поток
-        # Начинаем с текущей непереведенной, или с 0? Лучше с 0, но пропуская готовые.
-        # В worker'е просто начнем с 0, а в callback будем сохранять.
         self.worker = TranslatorWorker(self.pdf_path, engine)
+        self.worker.page_translated.connect(self.on_page_done)
         self.worker.progress_update.connect(self.update_progress)
-        self.worker.page_translated.connect(self.on_page_translated)
-        self.worker.finished_task.connect(self.on_translation_finished)
-        self.worker.error_occurred.connect(self.on_worker_error)
-
+        self.worker.finished_task.connect(self.on_finished)
+        self.worker.error_occurred.connect(self.on_error)
         self.worker.start()
 
     def stop_translation(self):
-        if self.worker:
+        if hasattr(self, 'worker'):
             self.worker.stop()
-            self.status_bar.setText("Остановка...")
+            self.status.setText("Прервано пользователем")
 
-    def update_progress(self, current, total):
-        self.progress_bar.setMaximum(total)
-        self.progress_bar.setValue(current)
-        self.status_bar.setText(f"Перевод страницы {current} из {total}...")
-
-    def on_page_translated(self, page_num, text):
-        self.translated_pages[page_num] = text
-
-        # Если мы смотрим на эту страницу прямо сейчас, обновить текст
-        if self.current_page == page_num:
+    def on_page_done(self, idx, text):
+        self.translated_pages[idx] = text
+        if self.current_page == idx:
             self.text_editor.setPlainText(text)
 
-    def on_translation_finished(self):
-        self.status_bar.setText("Перевод завершен!")
-        self.btn_start.setEnabled(True)
-        self.btn_stop.setEnabled(False)
-        self.combo_provider.setEnabled(True)
-        self.btn_save.setEnabled(True)
-        QMessageBox.information(self, "Успех", "Документ полностью переведен!")
+    def update_progress(self, curr, total):
+        self.progress.setMaximum(total)
+        self.progress.setValue(curr)
+        self.status.setText(f"Перевод: {curr}/{total}")
 
-    def on_worker_error(self, err_msg):
-        self.status_bar.setText("Ошибка!")
+    def on_finished(self):
+        self.status.setText("Готово!")
+        self.reset_controls()
+        self.btn_save.setEnabled(True)
+
+    def on_error(self, err):
+        self.status.setText("Ошибка!")
+        self.reset_controls()
+        QMessageBox.critical(self, "Ошибка перевода", err)
+
+    def reset_controls(self):
         self.btn_start.setEnabled(True)
         self.btn_stop.setEnabled(False)
         self.combo_provider.setEnabled(True)
-        QMessageBox.critical(self, "Ошибка перевода", err_msg)
+        self.combo_model.setEnabled(True)
+        self.input_key.setEnabled(self.combo_provider.currentText() != "G4F (Free)")
 
     def save_translation(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Сохранить перевод", "", "Markdown Files (*.md);;Text Files (*.txt)")
-        if not path:
-            return
+        path, _ = QFileDialog.getSaveFileName(self, "Сохранить", "", "Markdown (*.md);;Text (*.txt)")
+        if path:
+            try:
+                with open(path, 'w', encoding='utf-8') as f:
+                    for i in sorted(self.translated_pages.keys()):
+                        f.write(f"## Страница {i + 1}\n\n{self.translated_pages[i]}\n\n---\n\n")
+                QMessageBox.information(self, "ОК", "Сохранено")
+            except Exception as e:
+                QMessageBox.critical(self, "Ошибка", str(e))
 
-        try:
-            with open(path, 'w', encoding='utf-8') as f:
-                for page_num in sorted(self.translated_pages.keys()):
-                    f.write(f"## Страница {page_num + 1}\n\n")
-                    f.write(self.translated_pages[page_num])
-                    f.write("\n\n---\n\n")
-
-            self.status_bar.setText(f"Сохранено в {path}")
-        except Exception as e:
-            QMessageBox.critical(self, "Ошибка сохранения", str(e))
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-
-    # Настройка шрифтов для HighDPI
-    font = QFont("Segoe UI", 9)
-    app.setFont(font)
-
-    window = PDFTranslatorApp()
-    window.show()
+    app.setFont(QFont("Segoe UI", 10))
+    w = PDFTranslatorApp()
+    w.show()
     sys.exit(app.exec_())
