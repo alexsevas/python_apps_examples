@@ -1,29 +1,72 @@
 # Преобразование текста в речь с помощью PyTorch.
 
+# pip install git+https://github.com/as-ideas/DeepPhonemizer.git
 
-import torchaudio
+import sys
 import torch
+import torchaudio
 import matplotlib.pyplot as plt
-import IPython.display
+import soundfile as sf  # Для сохранения WAV
 
+# -------------------------------
+# Проверка Python и устройства
+# -------------------------------
+print("Python executable:", sys.executable)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print("Using device:", device)
+
+# -------------------------------
+# Загрузка TTS пайплайна
+# -------------------------------
 bundle = torchaudio.pipelines.TACOTRON2_WAVERNN_PHONE_LJSPEECH
 
+# Text processor
 processor = bundle.get_text_processor()
-tacotron2 = bundle.get_tacotron2().to(device)  # Move model to the desired device
-vocoder = bundle.get_vocoder().to(device)      # Move model to the desired device
 
-text = " My first text to speech!"
+# Tacotron2 на GPU
+tacotron2 = bundle.get_tacotron2().to(device)
 
+# WaveRNN на CPU (стабильнее на Windows)
+vocoder = bundle.get_vocoder().cpu()
+
+# -------------------------------
+# Входной текст
+# -------------------------------
+text = "If you wanna be OK, love the woman every day!"
+
+# -------------------------------
+# Inference
+# -------------------------------
 with torch.inference_mode():
+    # Преобразуем текст в тензор
     processed, lengths = processor(text)
-    processed = processed.to(device)      # Move processed text data to the device
-    lengths = lengths.to(device)          # Move lengths data to the device
+    processed = processed.to(device)
+    lengths = lengths.to(device)
+
+    # Tacotron2: text -> mel-spectrogram
     spec, spec_lengths, _ = tacotron2.infer(processed, lengths)
-    waveforms, lengths = vocoder(spec, spec_lengths)
 
+    # WaveRNN: mel -> waveform
+    waveforms, wave_lengths = vocoder(spec.cpu(), spec_lengths.cpu())
 
-fig, [ax1, ax2] = plt.subplots(2, 1, figsize=(16, 9))
-ax1.imshow(spec[0].cpu().detach(), origin="lower", aspect="auto")  # Display the generated spectrogram
-ax2.plot(waveforms
-             [0].cpu().detach())                             # Display the generated waveform7. Play the generated audio using IPython.display.Audio
-IPython.display.Audio(waveforms[0:1].cpu(), rate=vocoder.sample_rate)
+# -------------------------------
+# Визуализация
+# -------------------------------
+plt.figure(figsize=(16, 5))
+plt.imshow(spec[0].cpu().detach(), origin="lower", aspect="auto")
+plt.title("Generated Mel-Spectrogram")
+plt.colorbar()
+plt.tight_layout()
+plt.show()
+
+plt.figure(figsize=(16, 4))
+plt.plot(waveforms[0].cpu().detach())
+plt.title("Generated Waveform")
+plt.tight_layout()
+plt.show()
+
+# -------------------------------
+# Сохранение аудио
+# -------------------------------
+sf.write("tts_output.wav", waveforms[0].cpu().detach().numpy(), samplerate=vocoder.sample_rate)
+print("Saved to tts_output.wav")
