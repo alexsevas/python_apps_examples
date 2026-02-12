@@ -4,6 +4,7 @@
 # Простейший пример: отправка текстового письма через SMTP-сервер:
 
 
+
 import smtplib
 
 smtp_server = "smtp.gmail.com"
