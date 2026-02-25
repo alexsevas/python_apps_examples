@@ -1,52 +1,59 @@
 # Построение графиков акций
 # pip install yfinance mplfinance
 
+
 import yfinance as yf
 import mplfinance as mpf
 import pandas as pd
 
-# 1. Ввод тикера
-symbol = input("Enter the stock symbol (e.g., AAPL, MSFT, RUBUSD=X): ")
+symbol = input("Enter the stock symbol (e.g., AAPL, MSFT, ): ").strip().upper()
 
-# Если пользователь ввел просто RUB, подсказываем про валюты
-if symbol.upper() == 'RUB':
-    print("Hint: 'RUB' is a currency. Try 'RUBUSD=X' for exchange rate or a stock like 'AAPL'.")
-    symbol = 'RUBUSD=X'  # Исправляем на валютную пару для примера
+if symbol == 'RUB':
+    symbol = 'RUBUSD=X'
+    print(f"Hint: Using currency pair '{symbol}'")
 
-start_date = '2022-01-01'
-end_date = '2022-12-31'
+start_date = '2025-03-01'
+end_date = '2025-12-31'
 
 print(f"Downloading data for {symbol}...")
-
-# 2. Получение данных
 stock_data = yf.download(symbol, start=start_date, end=end_date)
 
-# 3. Проверка: пустые ли данные?
 if stock_data.empty:
-    print(f"Error: No data found for '{symbol}'. Check the symbol name.")
+    print(f"❌ Error: No data found for '{symbol}'.")
 else:
-    # 4. Исправление для новых версий yfinance (MultiIndex колонок)
-    # В новых версиях yfinance колонки могут быть вида ('Close', 'Price')
-    # mplfinance ожидает простые названия: 'Open', 'High', 'Low', 'Close', 'Volume'
+    # Исправление MultiIndex для новых версий yfinance
     if isinstance(stock_data.columns, pd.MultiIndex):
         stock_data.columns = stock_data.columns.droplevel(1)
 
-    # 5. Дополнительная проверка на наличие NaN в основных колонках
-    required_columns = ['Open', 'High', 'Low', 'Close', 'Volume']
-    if all(col in stock_data.columns for col in required_columns):
-        if stock_data[required_columns].isnull().any().any():
-            print("Warning: Data contains missing values. Cleaning...")
-            stock_data = stock_data.dropna()
+    required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+    if all(col in stock_data.columns for col in required_cols):
+        stock_data = stock_data.dropna(subset=required_cols)
 
-        if not stock_data.empty:
-            # 6. Построение графика
-            mpf.plot(stock_data,
-                     type='candle',
-                     style='yahoo',
-                     title=f'{symbol} Candlestick Chart',
-                     volume=True)  # Добавил объем для наглядности
+        if stock_data.empty:
+            print("❌ Error: No valid data left after cleaning.")
         else:
-            print("Error: No valid data left after cleaning NaNs.")
-    else:
-        print(f"Error: Downloaded data does not have required columns. Columns found: {stock_data.columns}")
+            print(f"\n✅ Data loaded: {len(stock_data)} rows")
+            print(f"📊 Price range (Close): {stock_data['Close'].min():.6f} — {stock_data['Close'].max():.6f}")
 
+            # === ПОДГОТОВКА ПАРАМЕТРОВ ГРАФИКА ===
+            plot_kwargs = {
+                'type': 'candle',
+                'style': 'yahoo',
+                'title': f'{symbol} Candlestick Chart',
+                'volume': True
+            }
+
+            # Добавляем ylim только если волатильность очень низкая
+            price_range = stock_data['Close'].max() - stock_data['Close'].min()
+            if price_range < 0.0001:
+                print("⚠️ Warning: Very low price variation. Adding manual padding to Y-axis...")
+                mid_price = stock_data['Close'].mean()
+                padding = mid_price * 0.05
+                plot_kwargs['ylim'] = (mid_price - padding, mid_price + padding)
+
+            # === ПОСТРОЕНИЕ ГРАФИКА ===
+            # Передаем параметры через распаковку словаря, чтобы не передавать ylim=None
+            mpf.plot(stock_data, **plot_kwargs)
+
+    else:
+        print(f"❌ Error: Missing required columns. Found: {list(stock_data.columns)}")
