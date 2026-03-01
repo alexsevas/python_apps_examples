@@ -1,23 +1,72 @@
-# pip install openai
+# pip install openai pypdf python-docx
 
 # Пример использования (CLI):
-# python main.py --input text.txt
+# python main.py report.pdf -v
+# python main.py contract.docx -o summary.txt
+# python main.py book.txt --chunk-tokens 2000
+#
+# summarize report.pdf -v
+# summarize contract.docx -o summary.txt
+# summarize book.txt --chunk-tokens 2000
 
-# v0.0.2 - добавляем автоматическое разбиение текста на чанки, суммаризацию каждого чанка и финальную «сумму суммаризаций»:
-# - Разбиваем исходный текст на чанки по ~N токенов (приближённо — по символам),
-# - Делаем краткое резюме каждого чанка,
-# - Склеиваем все промежуточные резюме,
-# - Делаем финальную суммаризацию.
+# v0.0.3:
+# модульное чтение файлов (load_text),
+# единый пайплайн суммаризации,
+# поддержка:.txt, .pdf, .docx,
+# понятный CLI,
+# детерминированное поведение,
+# масштабируемость под большие документы/
 
 
 
+#!/usr/bin/env python3
 import os
+import sys
 import argparse
-from openai import OpenAI
+from pathlib import Path
 
-# ≈ 4 символа ~= 1 токен (приближённо, но надёжно)
+from openai import OpenAI
+from pypdf import PdfReader
+from docx import Document
+
 CHARS_PER_TOKEN = 4
 
+
+# ---------- FILE LOADERS ----------
+
+def load_txt(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
+
+
+def load_pdf(path: Path) -> str:
+    reader = PdfReader(path)
+    pages = []
+    for page in reader.pages:
+        text = page.extract_text()
+        if text:
+            pages.append(text)
+    return "\n\n".join(pages)
+
+
+def load_docx(path: Path) -> str:
+    doc = Document(path)
+    return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+
+
+def load_text(path: Path) -> str:
+    suffix = path.suffix.lower()
+
+    if suffix == ".txt":
+        return load_txt(path)
+    elif suffix == ".pdf":
+        return load_pdf(path)
+    elif suffix == ".docx":
+        return load_docx(path)
+    else:
+        raise ValueError(f"Неподдерживаемый формат: {suffix}")
+
+
+# ---------- TEXT SPLITTING ----------
 
 def split_text(text: str, max_tokens: int) -> list[str]:
     max_chars = max_tokens * CHARS_PER_TOKEN
@@ -27,80 +76,112 @@ def split_text(text: str, max_tokens: int) -> list[str]:
     ]
 
 
+# ---------- SUMMARIZATION ----------
+
 def summarize_chunk(client: OpenAI, text: str, model: str) -> str:
     resp = client.responses.create(
         model=model,
         input=[
-            {"role": "system", "content": "Ты — полезный и точный ассистент."},
-            {"role": "user", "content": f"Кратко суммируй текст:\n\n{text}"}
+            {"role": "system", "content": "Ты точный аналитический ассистент."},
+            {"role": "user", "content": f"Кратко и по делу суммируй текст:\n\n{text}"}
         ],
         max_output_tokens=300
     )
     return resp.output_text.strip()
 
 
-def summarize_file(
-    input_path: str,
-    model: str = "gpt-4.1-mini",
-    chunk_tokens: int = 3000
+def summarize_document(
+    text: str,
+    model: str,
+    chunk_tokens: int,
+    verbose: bool
 ) -> str:
-
-    with open(input_path, "r", encoding="utf-8") as f:
-        text = f.read()
-
     client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
     chunks = split_text(text, chunk_tokens)
+    summaries = []
 
-    partial_summaries = []
     for i, chunk in enumerate(chunks, 1):
-        print(f"🧩 Суммаризация чанка {i}/{len(chunks)}...")
-        summary = summarize_chunk(client, chunk, model)
-        partial_summaries.append(summary)
+        if verbose:
+            print(f"[{i}/{len(chunks)}] Суммаризация чанка...")
+        summaries.append(summarize_chunk(client, chunk, model))
 
-    combined_summary = "\n\n".join(partial_summaries)
+    combined = "\n\n".join(summaries)
 
-    print("🧠 Финальная суммаризация...")
+    if verbose:
+        print("[final] Финальная агрегация...")
+
     final = client.responses.create(
         model=model,
         input=[
-            {"role": "system", "content": "Ты — эксперт по аналитическому резюмированию."},
+            {"role": "system", "content": "Ты эксперт по структурированным резюме."},
             {
                 "role": "user",
                 "content": (
                     "Сделай итоговое краткое и связное резюме "
-                    "на основе следующих промежуточных суммаризаций:\n\n"
-                    f"{combined_summary}"
+                    "на основе следующих текстов:\n\n"
+                    f"{combined}"
                 )
             }
         ],
-        max_output_tokens=500
+        max_output_tokens=600
     )
 
     return final.output_text.strip()
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--input", required=True, help="Путь к текстовому файлу")
+# ---------- CLI ----------
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        prog="summarize",
+        description="CLI-утилита для суммаризации TXT / PDF / DOCX с помощью OpenAI"
+    )
+
+    parser.add_argument("input", help="Путь к файлу")
     parser.add_argument(
-        "--model",
+        "-m", "--model",
         default="gpt-4.1-mini",
-        help="Модель (gpt-4.1 или gpt-4.1-mini)"
+        help="Модель OpenAI"
     )
     parser.add_argument(
         "--chunk-tokens",
         type=int,
         default=3000,
-        help="Размер чанка в токенах"
+        help="Размер чанка (в токенах)"
     )
+    parser.add_argument(
+        "-o", "--output",
+        help="Файл для сохранения результата"
+    )
+    parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help="Подробный вывод"
+    )
+
     args = parser.parse_args()
+    path = Path(args.input)
 
-    summary = summarize_file(
-        args.input,
+    if not path.exists():
+        print("Файл не найден", file=sys.stderr)
+        sys.exit(1)
+
+    text = load_text(path)
+
+    result = summarize_document(
+        text=text,
         model=args.model,
-        chunk_tokens=args.chunk_tokens
+        chunk_tokens=args.chunk_tokens,
+        verbose=args.verbose
     )
 
-    print("\n📄 FINAL SUMMARY:\n")
-    print(summary)
+    if args.output:
+        Path(args.output).write_text(result, encoding="utf-8")
+    else:
+        print("\n📄 SUMMARY:\n")
+        print(result)
+
+
+if __name__ == "__main__":
+    main()
