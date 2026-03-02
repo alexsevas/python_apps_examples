@@ -1,21 +1,14 @@
 # pip install openai pypdf python-docx
 
-# Пример использования (CLI):
-# python main.py report.pdf -v
-# python main.py contract.docx -o summary.txt
-# python main.py book.txt --chunk-tokens 2000
-#
-# summarize report.pdf -v
-# summarize contract.docx -o summary.txt
-# summarize book.txt --chunk-tokens 2000
+# summarize big_report.pdf -v
+# summarize contract.docx --mode executive -o exec.txt
+# summarize book.txt --mode outline --chunk-tokens 2000
 
-# v0.0.3:
-# модульное чтение файлов (load_text),
-# единый пайплайн суммаризации,
-# поддержка:.txt, .pdf, .docx,
-# понятный CLI,
-# детерминированное поведение,
-# масштабируемость под большие документы/
+# v0.0.4:
+# - Progress bar - tqdm, показывает реальный прогресс по чанкам
+# - Auto language - определяем язык через LLM один раз, до суммаризации
+# - Режимы вывода - управляются prompt-шаблонами, не хардкодом
+# - Production-CLI - флаги, предсказуемое поведение, расширяемость
 
 
 
@@ -28,11 +21,12 @@ from pathlib import Path
 from openai import OpenAI
 from pypdf import PdfReader
 from docx import Document
+from tqdm import tqdm
 
 CHARS_PER_TOKEN = 4
 
 
-# ---------- FILE LOADERS ----------
+# ================= FILE LOADERS =================
 
 def load_txt(path: Path) -> str:
     return path.read_text(encoding="utf-8")
@@ -55,7 +49,6 @@ def load_docx(path: Path) -> str:
 
 def load_text(path: Path) -> str:
     suffix = path.suffix.lower()
-
     if suffix == ".txt":
         return load_txt(path)
     elif suffix == ".pdf":
@@ -66,76 +59,126 @@ def load_text(path: Path) -> str:
         raise ValueError(f"Неподдерживаемый формат: {suffix}")
 
 
-# ---------- TEXT SPLITTING ----------
+# ================= TEXT UTILS =================
 
 def split_text(text: str, max_tokens: int) -> list[str]:
     max_chars = max_tokens * CHARS_PER_TOKEN
-    return [
-        text[i:i + max_chars]
-        for i in range(0, len(text), max_chars)
-    ]
+    return [text[i:i + max_chars] for i in range(0, len(text), max_chars)]
 
 
-# ---------- SUMMARIZATION ----------
+# ================= LLM HELPERS =================
 
-def summarize_chunk(client: OpenAI, text: str, model: str) -> str:
+def detect_language(client: OpenAI, text: str, model: str) -> str:
+    """Определяем язык один раз"""
+    sample = text[:2000]
+
+    resp = client.responses.create(
+        model=model,
+        input=[
+            {"role": "system", "content": "Ты лингвист."},
+            {
+                "role": "user",
+                "content": (
+                    "Определи язык текста одним словом "
+                    "(например: Russian, English, German):\n\n"
+                    f"{sample}"
+                )
+            }
+        ],
+        max_output_tokens=10
+    )
+    return resp.output_text.strip()
+
+
+def build_prompt(mode: str, language: str) -> str:
+    if mode == "outline":
+        return (
+            f"Сделай структурированный outline (иерархия пунктов) "
+            f"на языке {language}."
+        )
+    if mode == "bullet":
+        return (
+            f"Сделай краткое резюме в виде маркированных списков "
+            f"на языке {language}."
+        )
+    if mode == "executive":
+        return (
+            f"Сделай executive summary: суть, выводы, ключевые решения. "
+            f"Язык: {language}."
+        )
+    raise ValueError("Неизвестный режим")
+
+
+def summarize_chunk(client: OpenAI, text: str, model: str, instruction: str) -> str:
     resp = client.responses.create(
         model=model,
         input=[
             {"role": "system", "content": "Ты точный аналитический ассистент."},
-            {"role": "user", "content": f"Кратко и по делу суммируй текст:\n\n{text}"}
+            {
+                "role": "user",
+                "content": f"{instruction}\n\nТекст:\n{text}"
+            }
         ],
         max_output_tokens=300
     )
     return resp.output_text.strip()
 
 
+# ================= PIPELINE =================
+
 def summarize_document(
     text: str,
     model: str,
     chunk_tokens: int,
+    mode: str,
     verbose: bool
 ) -> str:
     client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+    if verbose:
+        print("🌍 Определение языка...")
+    language = detect_language(client, text, model)
+
+    instruction = build_prompt(mode, language)
+
     chunks = split_text(text, chunk_tokens)
     summaries = []
 
-    for i, chunk in enumerate(chunks, 1):
-        if verbose:
-            print(f"[{i}/{len(chunks)}] Суммаризация чанка...")
-        summaries.append(summarize_chunk(client, chunk, model))
+    for chunk in tqdm(chunks, desc="🧩 Суммаризация", unit="chunk"):
+        summaries.append(
+            summarize_chunk(client, chunk, model, instruction)
+        )
 
     combined = "\n\n".join(summaries)
 
     if verbose:
-        print("[final] Финальная агрегация...")
+        print("🧠 Финальная агрегация...")
 
     final = client.responses.create(
         model=model,
         input=[
-            {"role": "system", "content": "Ты эксперт по структурированным резюме."},
+            {"role": "system", "content": "Ты эксперт по итоговым резюме."},
             {
                 "role": "user",
                 "content": (
-                    "Сделай итоговое краткое и связное резюме "
-                    "на основе следующих текстов:\n\n"
+                    f"{instruction}\n\n"
+                    "Сделай итоговое резюме на основе:\n\n"
                     f"{combined}"
                 )
             }
         ],
-        max_output_tokens=600
+        max_output_tokens=700
     )
 
     return final.output_text.strip()
 
 
-# ---------- CLI ----------
+# ================= CLI =================
 
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="summarize",
-        description="CLI-утилита для суммаризации TXT / PDF / DOCX с помощью OpenAI"
+        description="Production CLI: суммаризация TXT / PDF / DOCX"
     )
 
     parser.add_argument("input", help="Путь к файлу")
@@ -148,7 +191,13 @@ def main() -> None:
         "--chunk-tokens",
         type=int,
         default=3000,
-        help="Размер чанка (в токенах)"
+        help="Размер чанка в токенах"
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["outline", "bullet", "executive"],
+        default="bullet",
+        help="Режим суммаризации"
     )
     parser.add_argument(
         "-o", "--output",
@@ -173,6 +222,7 @@ def main() -> None:
         text=text,
         model=args.model,
         chunk_tokens=args.chunk_tokens,
+        mode=args.mode,
         verbose=args.verbose
     )
 
