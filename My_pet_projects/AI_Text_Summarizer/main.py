@@ -1,18 +1,32 @@
-# pip install openai pypdf python-docx
+# pip install tqdm openai pypdf python-docx
 
-# summarize big_report.pdf -v
-# summarize contract.docx --mode executive -o exec.txt
-# summarize book.txt --mode outline --chunk-tokens 2000
+# Примеры использования:
+# export OPENAI_API_KEY="sk-..."
+# # Юридический договор
+# summarize contract.pdf --domain legal --mode executive -v
+# # Техническая документация
+# summarize spec.docx --domain technical --mode outline
+# # Научная статья
+# summarize paper.pdf --domain scientific --mode bullet
+# # Большой текст с выводом в файл
+# summarize book.txt --chunk-tokens 2000 -o summary.txt
 
-# v0.0.4:
-# - Progress bar - tqdm, показывает реальный прогресс по чанкам
-# - Auto language - определяем язык через LLM один раз, до суммаризации
-# - Режимы вывода - управляются prompt-шаблонами, не хардкодом
-# - Production-CLI - флаги, предсказуемое поведение, расширяемость
+# v0.0.5:
+# - TXT / PDF / DOCX
+# - chunking больших файлов
+# - progress-bar по реальным токенам (streaming)
+# - auto-language
+# - режимы outline / bullet / executive
+# - domain-режимы legal / technical / scientific
+# - современный OpenAI SDK (responses.stream)
 
 
 
 #!/usr/bin/env python3
+"""
+summarize.py — production CLI для суммаризации TXT / PDF / DOCX
+"""
+
 import os
 import sys
 import argparse
@@ -23,13 +37,20 @@ from pypdf import PdfReader
 from docx import Document
 from tqdm import tqdm
 
-CHARS_PER_TOKEN = 4
+
+# ==========================================================
+# CONFIG
+# ==========================================================
+
+CHARS_PER_TOKEN = 4   # безопасная аппроксимация
 
 
-# ================= FILE LOADERS =================
+# ==========================================================
+# FILE LOADERS
+# ==========================================================
 
 def load_txt(path: Path) -> str:
-    return path.read_text(encoding="utf-8")
+    return path.read_text(encoding="utf-8", errors="ignore")
 
 
 def load_pdf(path: Path) -> str:
@@ -51,36 +72,38 @@ def load_text(path: Path) -> str:
     suffix = path.suffix.lower()
     if suffix == ".txt":
         return load_txt(path)
-    elif suffix == ".pdf":
+    if suffix == ".pdf":
         return load_pdf(path)
-    elif suffix == ".docx":
+    if suffix == ".docx":
         return load_docx(path)
-    else:
-        raise ValueError(f"Неподдерживаемый формат: {suffix}")
+    raise ValueError(f"Неподдерживаемый формат: {suffix}")
 
 
-# ================= TEXT UTILS =================
+# ==========================================================
+# TEXT UTILS
+# ==========================================================
 
 def split_text(text: str, max_tokens: int) -> list[str]:
     max_chars = max_tokens * CHARS_PER_TOKEN
     return [text[i:i + max_chars] for i in range(0, len(text), max_chars)]
 
 
-# ================= LLM HELPERS =================
+# ==========================================================
+# LLM HELPERS
+# ==========================================================
 
 def detect_language(client: OpenAI, text: str, model: str) -> str:
-    """Определяем язык один раз"""
     sample = text[:2000]
 
     resp = client.responses.create(
         model=model,
         input=[
-            {"role": "system", "content": "Ты лингвист."},
+            {"role": "system", "content": "Ты профессиональный лингвист."},
             {
                 "role": "user",
                 "content": (
                     "Определи язык текста одним словом "
-                    "(например: Russian, English, German):\n\n"
+                    "(Russian, English, German, French и т.д.):\n\n"
                     f"{sample}"
                 )
             }
@@ -90,27 +113,53 @@ def detect_language(client: OpenAI, text: str, model: str) -> str:
     return resp.output_text.strip()
 
 
-def build_prompt(mode: str, language: str) -> str:
-    if mode == "outline":
+def domain_instruction(domain: str) -> str:
+    if domain == "legal":
         return (
-            f"Сделай структурированный outline (иерархия пунктов) "
-            f"на языке {language}."
+            "Юридический стиль: точные формулировки, "
+            "чёткое разделение фактов, выводов и правовых последствий."
         )
-    if mode == "bullet":
+    if domain == "technical":
         return (
-            f"Сделай краткое резюме в виде маркированных списков "
-            f"на языке {language}."
+            "Технический стиль: чёткие определения, алгоритмы, "
+            "причинно-следственные связи, без воды."
         )
-    if mode == "executive":
+    if domain == "scientific":
         return (
-            f"Сделай executive summary: суть, выводы, ключевые решения. "
-            f"Язык: {language}."
+            "Научный стиль: формальная подача, термины, "
+            "гипотезы, методы, выводы."
         )
-    raise ValueError("Неизвестный режим")
+    return ""
 
 
-def summarize_chunk(client: OpenAI, text: str, model: str, instruction: str) -> str:
-    resp = client.responses.create(
+def build_instruction(mode: str, language: str, domain: str) -> str:
+    base = {
+        "outline": f"Сделай структурированный outline на языке {language}.",
+        "bullet": f"Сделай краткое резюме в виде bullet-пунктов на языке {language}.",
+        "executive": (
+            f"Сделай executive summary (суть, выводы, решения) "
+            f"на языке {language}."
+        ),
+    }[mode]
+
+    dom = domain_instruction(domain)
+    return f"{base}\n{dom}".strip()
+
+
+# ==========================================================
+# STREAMING SUMMARIZATION
+# ==========================================================
+
+def summarize_chunk_streaming(
+    client: OpenAI,
+    text: str,
+    model: str,
+    instruction: str,
+    pbar: tqdm
+) -> str:
+    collected = []
+
+    with client.responses.stream(
         model=model,
         input=[
             {"role": "system", "content": "Ты точный аналитический ассистент."},
@@ -120,39 +169,55 @@ def summarize_chunk(client: OpenAI, text: str, model: str, instruction: str) -> 
             }
         ],
         max_output_tokens=300
-    )
-    return resp.output_text.strip()
+    ) as stream:
+        for event in stream:
+            if event.type == "response.output_text.delta":
+                token = event.delta
+                collected.append(token)
+                pbar.update(1)
+
+    return "".join(collected).strip()
 
 
-# ================= PIPELINE =================
+# ==========================================================
+# PIPELINE
+# ==========================================================
 
 def summarize_document(
     text: str,
     model: str,
     chunk_tokens: int,
     mode: str,
+    domain: str,
     verbose: bool
 ) -> str:
     client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
     if verbose:
-        print("🌍 Определение языка...")
+        print("🌍 Определение языка…")
     language = detect_language(client, text, model)
 
-    instruction = build_prompt(mode, language)
-
+    instruction = build_instruction(mode, language, domain)
     chunks = split_text(text, chunk_tokens)
+
     summaries = []
 
-    for chunk in tqdm(chunks, desc="🧩 Суммаризация", unit="chunk"):
-        summaries.append(
-            summarize_chunk(client, chunk, model, instruction)
-        )
+    with tqdm(
+        desc="🧩 Генерация (tokens)",
+        unit="tok",
+        dynamic_ncols=True
+    ) as pbar:
+        for chunk in chunks:
+            summaries.append(
+                summarize_chunk_streaming(
+                    client, chunk, model, instruction, pbar
+                )
+            )
 
     combined = "\n\n".join(summaries)
 
     if verbose:
-        print("🧠 Финальная агрегация...")
+        print("\n🧠 Финальная агрегация…")
 
     final = client.responses.create(
         model=model,
@@ -160,25 +225,23 @@ def summarize_document(
             {"role": "system", "content": "Ты эксперт по итоговым резюме."},
             {
                 "role": "user",
-                "content": (
-                    f"{instruction}\n\n"
-                    "Сделай итоговое резюме на основе:\n\n"
-                    f"{combined}"
-                )
+                "content": f"{instruction}\n\n{combined}"
             }
         ],
-        max_output_tokens=700
+        max_output_tokens=800
     )
 
     return final.output_text.strip()
 
 
-# ================= CLI =================
+# ==========================================================
+# CLI
+# ==========================================================
 
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="summarize",
-        description="Production CLI: суммаризация TXT / PDF / DOCX"
+        description="Production CLI для суммаризации TXT / PDF / DOCX"
     )
 
     parser.add_argument("input", help="Путь к файлу")
@@ -191,13 +254,19 @@ def main() -> None:
         "--chunk-tokens",
         type=int,
         default=3000,
-        help="Размер чанка в токенах"
+        help="Размер чанка (в токенах)"
     )
     parser.add_argument(
         "--mode",
         choices=["outline", "bullet", "executive"],
         default="bullet",
-        help="Режим суммаризации"
+        help="Формат результата"
+    )
+    parser.add_argument(
+        "--domain",
+        choices=["legal", "technical", "scientific"],
+        default="technical",
+        help="Предметная область"
     )
     parser.add_argument(
         "-o", "--output",
@@ -223,6 +292,7 @@ def main() -> None:
         model=args.model,
         chunk_tokens=args.chunk_tokens,
         mode=args.mode,
+        domain=args.domain,
         verbose=args.verbose
     )
 
