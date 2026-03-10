@@ -5,21 +5,40 @@ class OllamaEngine:
 
     def __init__(self, model):
         self.model = model
-
+        self.base_url = "http://localhost:11434"
 
     def stream(self, prompt):
-        r = requests.post(
-            "http://localhost:11434/api/generate",
-            json={
-                "model": self.model,
-                "prompt": prompt,
-                "stream": True
-            },
-            stream=True
-        )
-        for line in r.iter_lines():
-            if not line:
-                continue
-            data = json.loads(line)
-            if "response" in data:
-                yield data["response"]
+        try:
+            r = requests.post(
+                f"{self.base_url}/api/generate",
+                json={
+                    "model": self.model,
+                    "prompt": prompt,
+                    "stream": True
+                },
+                stream=True,
+                timeout=5
+            )
+            r.raise_for_status()
+            
+            for line in r.iter_lines():
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                    if "response" in data:
+                        yield data["response"]
+                    if data.get("done", False):
+                        break
+                except json.JSONDecodeError:
+                    continue
+                    
+        except requests.exceptions.ConnectionError:
+            raise Exception("Cannot connect to Ollama. Make sure Ollama is running on localhost:11434")
+        except requests.exceptions.Timeout:
+            raise Exception("Connection to Ollama timed out")
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 404:
+                raise Exception(f"Model '{self.model}' not found. Please pull it first: ollama pull {self.model}")
+            else:
+                raise Exception(f"Ollama error: {e}")

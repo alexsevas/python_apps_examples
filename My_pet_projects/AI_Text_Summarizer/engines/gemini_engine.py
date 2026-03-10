@@ -4,16 +4,19 @@ import os
 class GeminiEngine:
 
     def __init__(self, model):
-        genai.configure(
-            api_key=os.getenv("GOOGLE_API_KEY")
-        )
+        api_key = os.getenv("GOOGLE_API_KEY")
+        if not api_key:
+            raise Exception("GOOGLE_API_KEY not found in environment")
+        genai.configure(api_key=api_key)
         self.model = genai.GenerativeModel(model)
 
-
     def stream(self, prompt):
-        for chunk in self.model.generate_content(
-            prompt,
-            stream=True
-        ):
-            if chunk.text:
-                yield chunk.text
+        try:
+            for chunk in self.model.generate_content(
+                prompt,
+                stream=True
+            ):
+                if chunk.text:
+                    yield chunk.text
+        except Exception as e:
+            raise Exception(f"Gemini error: {str(e)}")
