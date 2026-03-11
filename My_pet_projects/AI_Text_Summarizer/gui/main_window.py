@@ -205,6 +205,19 @@ class MainWindow(QWidget):
         # Убираем эмодзи и пробелы из названия модели
         model = model_text.replace("📦 ", "").replace("☁️ ", "").strip()
         
+        print(f"DEBUG: Выбран движок: {engine_name}, модель: {model}")
+        
+        # Проверяем Ollama ПЕРЕД всеми действиями
+        if engine_name == "Ollama":
+            if not self.ollama_helper.is_running():
+                QMessageBox.warning(
+                    self,
+                    "Ollama не запущена",
+                    "Ollama не запущена. Пожалуйста, запустите её сначала."
+                )
+                self.check_ollama_status()
+                return
+        
         # Если модель облачная (с ☁️), предлагаем скачать
         if "☁️" in model_text:
             reply = QMessageBox.question(
@@ -222,18 +235,9 @@ class MainWindow(QWidget):
             else:
                 return
         
-        # Проверяем Ollama перед запуском
-        if engine_name == "Ollama" and not self.ollama_helper.is_running():
-            QMessageBox.warning(
-                self,
-                "Ollama не запущена",
-                "Ollama не запущена. Пожалуйста, запустите её сначала."
-            )
-            self.check_ollama_status()
-            return
-        
         try:
             if engine_name == "Ollama":
+                print(f"DEBUG: Создаем OllamaEngine с моделью: {model}")
                 engine = OllamaEngine(model)
             elif engine_name == "OpenAI":
                 engine = OpenAIEngine(model)
@@ -247,6 +251,8 @@ class MainWindow(QWidget):
                 self.domain_box.currentText(),
                 self.text
             )
+            
+            print(f"DEBUG: Длина промпта: {len(prompt)} символов")
 
             self.output.clear()
             self.progress.show()
@@ -256,8 +262,10 @@ class MainWindow(QWidget):
             )
             self.worker.error.connect(self.on_error)
             self.worker.finished.connect(self.on_finished)
+            print("DEBUG: Запускаем worker...")
             self.worker.start()
         except Exception as e:
+            print(f"DEBUG: Ошибка при запуске: {e}")
             QMessageBox.critical(self, "Error", f"Failed to start: {str(e)}")
     
     def download_model(self, model_name):

@@ -13,7 +13,10 @@ class Worker(QThread):
 
     def run(self):
         try:
+            print("DEBUG: Worker started, начинаем стриминг...")
             for tok in self.engine.stream(self.prompt):
                 self.token.emit(tok)
+            print("DEBUG: Worker finished successfully")
         except Exception as e:
+            print(f"DEBUG: Worker error: {e}")
             self.error.emit(str(e))
