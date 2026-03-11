@@ -38,14 +38,17 @@ class OllamaHelper:
     
     def get_local_models(self) -> List[str]:
         """Получает список локально установленных моделей"""
+        if not self.is_running():
+            return []
+        
         try:
             response = requests.get(f"{self.base_url}/api/tags", timeout=5)
             if response.status_code == 200:
                 data = response.json()
                 models = [model["name"] for model in data.get("models", [])]
                 return sorted(models)
-        except:
-            pass
+        except Exception as e:
+            print(f"Failed to get local models: {e}")
         return []
     
     def get_cloud_models(self) -> List[Dict[str, str]]:

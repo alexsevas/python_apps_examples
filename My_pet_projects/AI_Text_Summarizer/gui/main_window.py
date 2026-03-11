@@ -50,8 +50,12 @@ class MainWindow(QWidget):
 
         open_btn = QPushButton("Open File")
         run_btn = QPushButton("Summarize")
+        refresh_btn = QPushButton("🔄")
+        refresh_btn.setMaximumWidth(40)
+        refresh_btn.setToolTip("Обновить список моделей")
         open_btn.clicked.connect(self.open_file)
         run_btn.clicked.connect(self.run)
+        refresh_btn.clicked.connect(self.update_models)
 
         top = QHBoxLayout()
 
@@ -59,6 +63,7 @@ class MainWindow(QWidget):
             open_btn,
             self.engine_box,
             self.model_box,
+            refresh_btn,
             self.mode_box,
             self.domain_box,
             run_btn
@@ -120,6 +125,8 @@ class MainWindow(QWidget):
                         "Успех",
                         "Ollama успешно запущена!"
                     )
+                    # Обновляем список моделей после запуска
+                    self.update_models()
                 else:
                     QMessageBox.warning(
                         self,
@@ -135,6 +142,7 @@ class MainWindow(QWidget):
         if engine_name == "Ollama":
             # Получаем локальные модели
             local_models = self.ollama_helper.get_local_models()
+            print(f"DEBUG: Локальные модели Ollama: {local_models}")
             
             if local_models:
                 # Добавляем заголовок для локальных моделей
@@ -142,17 +150,22 @@ class MainWindow(QWidget):
                 self.model_box.model().item(0).setEnabled(False)
                 for model in local_models:
                     self.model_box.addItem(f"📦 {model}")
+                    print(f"DEBUG: Добавлена локальная модель: {model}")
+            else:
+                print("DEBUG: Локальные модели не найдены")
             
-            # Добавляем облачные модели
+            # Добавляем облачные модели - показываем ВСЕ доступные
+            header_index = self.model_box.count()
             self.model_box.addItem("--- Доступные для скачивания ---")
-            self.model_box.model().item(self.model_box.count() - 1).setEnabled(False)
+            self.model_box.model().item(header_index).setEnabled(False)
             
             cloud_models = self.ollama_helper.get_cloud_models()
+            print(f"DEBUG: Облачные модели: {len(cloud_models)} шт.")
             for model_info in cloud_models:
                 model_name = model_info["name"]
-                # Проверяем, не установлена ли уже эта модель
-                if not any(model_name in local for local in local_models):
-                    self.model_box.addItem(f"☁️ {model_name}")
+                # Показываем все облачные модели
+                self.model_box.addItem(f"☁️ {model_name}")
+                print(f"DEBUG: Добавлена облачная модель: {model_name}")
             
             # Выбираем первую доступную модель
             if local_models:
