@@ -31,6 +31,8 @@ class MainWindow(QWidget):
         self.worker = None
         self.download_thread = None
         self.current_file_path = None
+        self.current_model = None  # Отслеживаем текущую модель
+        self.current_engine = None  # Отслеживаем текущий движок
         
         # Проверяем Ollama при запуске
         self.check_ollama_status()
@@ -238,6 +240,17 @@ class MainWindow(QWidget):
         model = model_text.replace("📦 ", "").replace("☁️ ", "").strip()
         print(f"DEBUG: Выбран движок: {engine_name}, модель: {model}")
         
+        # Выгружаем предыдущую модель Ollama если меняем модель
+        if engine_name == "Ollama" and self.current_model and self.current_model != model:
+            print(f"DEBUG: Смена модели с {self.current_model} на {model}")
+            self.ollama_helper.unload_model(self.current_model)
+        
+        # Если меняем движок с Ollama на другой, выгружаем все модели Ollama
+        if self.current_engine == "Ollama" and engine_name != "Ollama":
+            print(f"DEBUG: Смена движка с Ollama на {engine_name}, выгружаем все модели")
+            self.ollama_helper.unload_all_models()
+            self.current_model = None
+        
         # Проверяем Ollama
         if engine_name == "Ollama":
             if not self.ollama_helper.is_running():
@@ -292,6 +305,10 @@ class MainWindow(QWidget):
             self.save_btn.setEnabled(False)
             self.copy_btn.setEnabled(False)
             
+            # Сохраняем текущую модель и движок
+            self.current_model = model
+            self.current_engine = engine_name
+            
             self.worker = Worker(engine, prompt)
             self.worker.token.connect(self.on_token)
             self.worker.error.connect(self.on_error)
@@ -311,6 +328,12 @@ class MainWindow(QWidget):
             self.worker.wait(1000)  # Ждем 1 секунду
             if self.worker.isRunning():
                 self.worker.terminate()
+            
+            # Выгружаем модель Ollama при остановке
+            if self.current_engine == "Ollama" and self.current_model:
+                print(f"DEBUG: Выгружаем модель {self.current_model} после остановки")
+                self.ollama_helper.unload_model(self.current_model)
+            
             self.on_finished()
             QMessageBox.information(self, "Stopped", "Generation stopped")
     
@@ -327,6 +350,12 @@ class MainWindow(QWidget):
         self.progress.hide()
         self.run_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
+        
+        # Выгружаем модель Ollama при ошибке
+        if self.current_engine == "Ollama" and self.current_model:
+            print(f"DEBUG: Выгружаем модель {self.current_model} после ошибки")
+            self.ollama_helper.unload_model(self.current_model)
+        
         QMessageBox.critical(self, "Error", f"Summarization failed:\n{error_msg}")
     
     def on_finished(self):
@@ -334,6 +363,12 @@ class MainWindow(QWidget):
         self.progress.hide()
         self.run_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
+        
+        # Выгружаем модель Ollama после завершения
+        # Это освобождает VRAM для других задач
+        if self.current_engine == "Ollama" and self.current_model:
+            print(f"DEBUG: Выгружаем модель {self.current_model} после завершения")
+            self.ollama_helper.unload_model(self.current_model)
         
         if self.output.toPlainText().strip():
             self.save_btn.setEnabled(True)
@@ -460,6 +495,11 @@ class MainWindow(QWidget):
             self.download_thread.wait(1000)
             if self.download_thread.isRunning():
                 self.download_thread.terminate()
+        
+        # Выгружаем все модели Ollama
+        if self.current_engine == "Ollama":
+            print("DEBUG: Выгружаем все модели Ollama при закрытии приложения")
+            self.ollama_helper.unload_all_models()
         
         # Очищаем viewer
         self.viewer.clear()
