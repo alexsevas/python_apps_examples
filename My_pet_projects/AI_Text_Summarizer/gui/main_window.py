@@ -34,10 +34,6 @@ class MainWindow(QWidget):
         self.current_model = None  # Отслеживаем текущую модель
         self.current_engine = None  # Отслеживаем текущий движок
         
-        # Проверяем Ollama при запуске
-        self.log_info("Запуск приложения...")
-        self.check_ollama_status()
-        
         # UI элементы
         self.engine_box = QComboBox()
         self.engine_box.addItems(self.api.available_engines())
@@ -127,6 +123,10 @@ class MainWindow(QWidget):
         layout.addLayout(bottom_buttons)
         layout.addWidget(self.progress)
         layout.addWidget(self.log_window)
+        
+        # Проверяем Ollama при запуске (после создания log_window)
+        self.log_info("Запуск приложения...")
+        self.check_ollama_status()
 
     def log_info(self, message):
         """Добавляет информационное сообщение в лог"""
