@@ -34,7 +34,6 @@ class OllamaHelper:
             time.sleep(2)
             return self.is_running()
         except Exception as e:
-            print(f"Failed to start Ollama: {e}")
             return False
     
     def get_local_models(self) -> List[str]:
@@ -49,7 +48,7 @@ class OllamaHelper:
                 models = [model["name"] for model in data.get("models", [])]
                 return sorted(models)
         except Exception as e:
-            print(f"Failed to get local models: {e}")
+            pass
         return []
     
     def get_loaded_models(self) -> List[Dict[str, any]]:
@@ -63,7 +62,7 @@ class OllamaHelper:
                 data = response.json()
                 return data.get("models", [])
         except Exception as e:
-            print(f"Failed to get loaded models: {e}")
+            pass
         return []
     
     def unload_model(self, model_name: str) -> bool:
@@ -72,7 +71,6 @@ class OllamaHelper:
             return False
         
         try:
-            print(f"DEBUG: Выгружаем модель {model_name} из памяти...")
             # Используем API для выгрузки модели
             # Отправляем запрос с keep_alive=0 для немедленной выгрузки
             # Добавляем пустой prompt чтобы запрос был валидным
@@ -89,30 +87,24 @@ class OllamaHelper:
             
             # Проверяем успешность
             if response.status_code == 200:
-                print(f"DEBUG: Модель {model_name} успешно выгружена")
                 if self.current_loaded_model == model_name:
                     self.current_loaded_model = None
                 return True
             else:
-                print(f"DEBUG: Не удалось выгрузить модель {model_name}, код: {response.status_code}")
                 return False
         except Exception as e:
-            print(f"Failed to unload model {model_name}: {e}")
             return False
     
     def unload_all_models(self) -> bool:
         """Выгружает все модели из памяти"""
         loaded_models = self.get_loaded_models()
         if not loaded_models:
-            print("DEBUG: Нет загруженных моделей для выгрузки")
             return True
         
-        print(f"DEBUG: Найдено {len(loaded_models)} моделей в памяти, выгружаем...")
         success = True
         for model_info in loaded_models:
             model_name = model_info.get("name", "")
             if model_name:
-                print(f"DEBUG: Выгружаем {model_name}...")
                 if not self.unload_model(model_name):
                     success = False
         
@@ -123,10 +115,8 @@ class OllamaHelper:
         time.sleep(1)  # Даем время на выгрузку
         remaining = self.get_loaded_models()
         if remaining:
-            print(f"DEBUG: После выгрузки осталось {len(remaining)} моделей в памяти")
             return False
         else:
-            print("DEBUG: Все модели успешно выгружены")
             return True
     
     def get_cloud_models(self) -> List[Dict[str, str]]:
@@ -168,5 +158,4 @@ class OllamaHelper:
                             return True
                 return True
         except Exception as e:
-            print(f"Failed to pull model: {e}")
             return False

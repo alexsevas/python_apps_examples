@@ -35,6 +35,7 @@ class MainWindow(QWidget):
         self.current_engine = None  # Отслеживаем текущий движок
         
         # Проверяем Ollama при запуске
+        self.log_info("Запуск приложения...")
         self.check_ollama_status()
         
         # UI элементы
@@ -58,6 +59,22 @@ class MainWindow(QWidget):
         self.progress = QProgressBar()
         self.progress.setMaximum(0)
         self.progress.hide()
+        
+        # Информационное окно для логов
+        self.log_window = QTextEdit()
+        self.log_window.setReadOnly(True)
+        self.log_window.setMaximumHeight(100)
+        self.log_window.setPlaceholderText("Информация о работе программы...")
+        self.log_window.setStyleSheet("""
+            QTextEdit {
+                background-color: #f5f5f5;
+                border: 1px solid #ddd;
+                border-radius: 3px;
+                padding: 5px;
+                font-family: 'Consolas', 'Courier New', monospace;
+                font-size: 9pt;
+            }
+        """)
         
         self.update_models()
 
@@ -109,7 +126,19 @@ class MainWindow(QWidget):
         layout.addLayout(main)
         layout.addLayout(bottom_buttons)
         layout.addWidget(self.progress)
+        layout.addWidget(self.log_window)
 
+    def log_info(self, message):
+        """Добавляет информационное сообщение в лог"""
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.log_window.append(f"[{timestamp}] {message}")
+        # Автоскролл
+        cursor = self.log_window.textCursor()
+        cursor.movePosition(cursor.End)
+        self.log_window.setTextCursor(cursor)
+        QApplication.processEvents()
+    
     def open_file(self):
         """Открывает файл с индикацией прогресса"""
         path, _ = QFileDialog.getOpenFileName(
@@ -120,6 +149,8 @@ class MainWindow(QWidget):
         )
         if not path:
             return
+        
+        self.log_info(f"Открытие файла: {path}")
         
         # Показываем индикатор загрузки
         self.progress.show()
@@ -136,6 +167,7 @@ class MainWindow(QWidget):
             
             char_count = len(self.text)
             word_count = len(self.text.split())
+            self.log_info(f"Файл загружен: {char_count:,} символов, {word_count:,} слов")
             QMessageBox.information(
                 self, 
                 "Success", 
@@ -144,6 +176,7 @@ class MainWindow(QWidget):
                 f"Words: {word_count:,}"
             )
         except Exception as e:
+            self.log_info(f"Ошибка загрузки файла: {str(e)}")
             QMessageBox.critical(self, "Error", f"Failed to load file:\n{str(e)}")
             self.text = ""
             self.current_file_path = None
@@ -152,7 +185,9 @@ class MainWindow(QWidget):
 
     def check_ollama_status(self):
         """Проверяет статус Ollama и предлагает запустить если не запущена"""
+        self.log_info("Проверка статуса Ollama...")
         if not self.ollama_helper.is_running():
+            self.log_info("Ollama не запущена")
             reply = QMessageBox.question(
                 self,
                 "Ollama не запущена",
@@ -162,7 +197,9 @@ class MainWindow(QWidget):
             )
             
             if reply == QMessageBox.Yes:
+                self.log_info("Попытка запуска Ollama...")
                 if self.ollama_helper.start_ollama():
+                    self.log_info("Ollama успешно запущена")
                     QMessageBox.information(
                         self,
                         "Успех",
@@ -170,29 +207,33 @@ class MainWindow(QWidget):
                     )
                     self.update_models()
                 else:
+                    self.log_info("Не удалось запустить Ollama автоматически")
                     QMessageBox.warning(
                         self,
                         "Ошибка",
                         "Не удалось запустить Ollama автоматически.\n\n"
                         "Пожалуйста, запустите Ollama вручную командой:\nollama serve"
                     )
+        else:
+            self.log_info("Ollama запущена и готова к работе")
     
     def update_models(self):
         """Обновляет список моделей"""
         engine_name = self.engine_box.currentText()
         self.model_box.clear()
+        self.log_info(f"Обновление списка моделей для {engine_name}")
         
         if engine_name == "Ollama":
             local_models = self.ollama_helper.get_local_models()
-            print(f"DEBUG: Локальные модели Ollama: {local_models}")
             
             if local_models:
+                self.log_info(f"Найдено {len(local_models)} локальных моделей Ollama")
                 self.model_box.addItem("--- Локальные модели ---")
                 self.model_box.model().item(0).setEnabled(False)
                 for model in local_models:
                     self.model_box.addItem(f"📦 {model}")
             else:
-                print("DEBUG: Локальные модели не найдены")
+                self.log_info("Локальные модели Ollama не найдены")
             
             header_index = self.model_box.count()
             self.model_box.addItem("--- Доступные для скачивания ---")
@@ -238,22 +279,25 @@ class MainWindow(QWidget):
             return
         
         model = model_text.replace("📦 ", "").replace("☁️ ", "").strip()
-        print(f"DEBUG: Выбран движок: {engine_name}, модель: {model}")
+        self.log_info(f"Выбран движок: {engine_name}, модель: {model}")
         
         # Выгружаем предыдущую модель Ollama если меняем модель
         if engine_name == "Ollama" and self.current_model and self.current_model != model:
-            print(f"DEBUG: Смена модели с {self.current_model} на {model}")
+            self.log_info(f"Смена модели с {self.current_model} на {model}")
+            self.log_info(f"Выгрузка модели {self.current_model} из памяти...")
             self.ollama_helper.unload_model(self.current_model)
         
         # Если меняем движок с Ollama на другой, выгружаем все модели Ollama
         if self.current_engine == "Ollama" and engine_name != "Ollama":
-            print(f"DEBUG: Смена движка с Ollama на {engine_name}, выгружаем все модели")
+            self.log_info(f"Смена движка с Ollama на {engine_name}")
+            self.log_info("Выгрузка всех моделей Ollama из памяти...")
             self.ollama_helper.unload_all_models()
             self.current_model = None
         
         # Проверяем Ollama
         if engine_name == "Ollama":
             if not self.ollama_helper.is_running():
+                self.log_info("Ollama не запущена")
                 QMessageBox.warning(
                     self,
                     "Ollama не запущена",
@@ -264,6 +308,7 @@ class MainWindow(QWidget):
         
         # Если модель облачная, предлагаем скачать
         if "☁️" in model_text:
+            self.log_info(f"Модель {model} не установлена локально")
             reply = QMessageBox.question(
                 self,
                 "Скачать модель?",
@@ -279,6 +324,7 @@ class MainWindow(QWidget):
         
         try:
             # Создаем движок
+            self.log_info(f"Инициализация движка {engine_name}...")
             if engine_name == "Ollama":
                 engine = OllamaEngine(model)
             elif engine_name == "OpenAI":
@@ -295,7 +341,8 @@ class MainWindow(QWidget):
                 self.text
             )
             
-            print(f"DEBUG: Длина промпта: {len(prompt)} символов")
+            self.log_info(f"Длина промпта: {len(prompt)} символов")
+            self.log_info("Запуск генерации...")
 
             # Запускаем worker
             self.output.clear()
@@ -316,13 +363,15 @@ class MainWindow(QWidget):
             self.worker.start()
             
         except ValueError as e:
+            self.log_info(f"Ошибка валидации: {str(e)}")
             QMessageBox.warning(self, "Validation Error", str(e))
         except Exception as e:
-            print(f"DEBUG: Ошибка при запуске: {e}")
+            self.log_info(f"Ошибка при запуске: {str(e)}")
             QMessageBox.critical(self, "Error", f"Failed to start: {str(e)}")
     
     def stop_generation(self):
         """Останавливает генерацию"""
+        self.log_info("Остановка генерации...")
         if self.worker and self.worker.isRunning():
             self.worker.stop()
             self.worker.wait(1000)  # Ждем 1 секунду
@@ -331,10 +380,11 @@ class MainWindow(QWidget):
             
             # Выгружаем модель Ollama при остановке
             if self.current_engine == "Ollama" and self.current_model:
-                print(f"DEBUG: Выгружаем модель {self.current_model} после остановки")
+                self.log_info(f"Выгрузка модели {self.current_model} после остановки...")
                 self.ollama_helper.unload_model(self.current_model)
             
             self.on_finished()
+            self.log_info("Генерация остановлена")
             QMessageBox.information(self, "Stopped", "Generation stopped")
     
     def on_token(self, token):
@@ -351,9 +401,11 @@ class MainWindow(QWidget):
         self.run_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         
+        self.log_info(f"Ошибка: {error_msg}")
+        
         # Выгружаем модель Ollama при ошибке
         if self.current_engine == "Ollama" and self.current_model:
-            print(f"DEBUG: Выгружаем модель {self.current_model} после ошибки")
+            self.log_info(f"Выгрузка модели {self.current_model} после ошибки...")
             self.ollama_helper.unload_model(self.current_model)
         
         QMessageBox.critical(self, "Error", f"Summarization failed:\n{error_msg}")
@@ -367,8 +419,10 @@ class MainWindow(QWidget):
         # Выгружаем модель Ollama после завершения
         # Это освобождает VRAM для других задач
         if self.current_engine == "Ollama" and self.current_model:
-            print(f"DEBUG: Выгружаем модель {self.current_model} после завершения")
+            self.log_info(f"Выгрузка модели {self.current_model} после завершения...")
             self.ollama_helper.unload_model(self.current_model)
+        
+        self.log_info("Генерация завершена")
         
         if self.output.toPlainText().strip():
             self.save_btn.setEnabled(True)
@@ -390,8 +444,10 @@ class MainWindow(QWidget):
             try:
                 with open(path, 'w', encoding='utf-8') as f:
                     f.write(self.output.toPlainText())
+                self.log_info(f"Результат сохранен: {path}")
                 QMessageBox.information(self, "Success", "Result saved successfully!")
             except Exception as e:
+                self.log_info(f"Ошибка сохранения: {str(e)}")
                 QMessageBox.critical(self, "Error", f"Failed to save: {str(e)}")
     
     def copy_result(self):
@@ -401,10 +457,12 @@ class MainWindow(QWidget):
         
         clipboard = QApplication.clipboard()
         clipboard.setText(self.output.toPlainText())
+        self.log_info("Результат скопирован в буфер обмена")
         QMessageBox.information(self, "Success", "Result copied to clipboard!")
     
     def download_model(self, model_name):
         """Скачивает модель Ollama"""
+        self.log_info(f"Начало скачивания модели {model_name}")
         progress_dialog = QProgressDialog(
             f"Скачивание модели {model_name}...",
             "Отмена",
@@ -454,6 +512,7 @@ class MainWindow(QWidget):
     
     def cancel_download(self, progress_dialog):
         """Отменяет скачивание модели"""
+        self.log_info("Отмена скачивания модели")
         if self.download_thread and self.download_thread.isRunning():
             self.download_thread.stop()
             self.download_thread.wait(1000)
@@ -467,6 +526,7 @@ class MainWindow(QWidget):
         progress_dialog.close()
         
         if success:
+            self.log_info(f"Модель {model_name} успешно скачана")
             QMessageBox.information(
                 self,
                 "Успех",
@@ -474,6 +534,7 @@ class MainWindow(QWidget):
             )
             self.update_models()
         else:
+            self.log_info(f"Не удалось скачать модель {model_name}")
             QMessageBox.critical(
                 self,
                 "Ошибка",
@@ -482,8 +543,11 @@ class MainWindow(QWidget):
     
     def closeEvent(self, event):
         """Очистка при закрытии окна"""
+        self.log_info("Закрытие приложения...")
+        
         # Останавливаем worker если работает
         if self.worker and self.worker.isRunning():
+            self.log_info("Остановка worker...")
             self.worker.stop()
             self.worker.wait(1000)
             if self.worker.isRunning():
@@ -491,6 +555,7 @@ class MainWindow(QWidget):
         
         # Останавливаем скачивание если идет
         if self.download_thread and self.download_thread.isRunning():
+            self.log_info("Остановка скачивания...")
             self.download_thread.stop()
             self.download_thread.wait(1000)
             if self.download_thread.isRunning():
@@ -498,10 +563,11 @@ class MainWindow(QWidget):
         
         # Выгружаем все модели Ollama
         if self.current_engine == "Ollama":
-            print("DEBUG: Выгружаем все модели Ollama при закрытии приложения")
+            self.log_info("Выгрузка всех моделей Ollama из памяти...")
             self.ollama_helper.unload_all_models()
         
         # Очищаем viewer
         self.viewer.clear()
         
+        self.log_info("Приложение закрыто")
         event.accept()
